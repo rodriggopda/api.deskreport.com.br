@@ -19,5 +19,13 @@ export const auth = betterAuth({
     },
     plugins: [
         organization()
-    ]
+    ],
+    organization: {
+        additionalFields: {
+            metadata: {
+                type: "string",
+                required: false,
+            }
+        }
+    }
 });
