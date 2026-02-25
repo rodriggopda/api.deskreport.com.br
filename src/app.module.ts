@@ -4,6 +4,8 @@ import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { TasksModule } from './modules/tasks/tasks.module';
 import { AuthModule } from './auth/auth.module';
+import { ProjectsModule } from './modules/projects/projects.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -14,6 +16,8 @@ import { AuthModule } from './auth/auth.module';
     PrismaModule,
     TasksModule,
     AuthModule,
+    ProjectsModule,
+    DashboardModule,
   ],
   controllers: [],
   providers: [],

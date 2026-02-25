@@ -1,32 +1,33 @@
 import { Controller, Get, Post, Body, Param, Put, Delete } from '@nestjs/common';
 import { TasksService } from './tasks.service';
+import { ActiveOrg } from '../../auth/active-org.decorator';
 
 @Controller('tasks')
 export class TasksController {
     constructor(private readonly tasksService: TasksService) { }
 
     @Post()
-    create(@Body() data: any) {
-        return this.tasksService.create(data);
+    create(@ActiveOrg() orgId: string, @Body() data: any) {
+        return this.tasksService.create(orgId, data);
     }
 
     @Get()
-    findAll() {
-        return this.tasksService.findAll();
+    findAll(@ActiveOrg() orgId: string) {
+        return this.tasksService.findAll(orgId);
     }
 
     @Get(':id')
-    findOne(@Param('id') id: string) {
-        return this.tasksService.findOne(id);
+    findOne(@ActiveOrg() orgId: string, @Param('id') id: string) {
+        return this.tasksService.findOne(id, orgId);
     }
 
     @Put(':id')
-    update(@Param('id') id: string, @Body() data: any) {
-        return this.tasksService.update(id, data);
+    update(@ActiveOrg() orgId: string, @Param('id') id: string, @Body() data: any) {
+        return this.tasksService.update(id, orgId, data);
     }
 
     @Delete(':id')
-    remove(@Param('id') id: string) {
-        return this.tasksService.remove(id);
+    remove(@ActiveOrg() orgId: string, @Param('id') id: string) {
+        return this.tasksService.remove(id, orgId);
     }
 }

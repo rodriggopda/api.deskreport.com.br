@@ -1,9 +1,10 @@
-import { Controller, Get, Post } from '@nestjs/common';
+import { Controller, Get, Post, Body } from '@nestjs/common';
 import { SettingsService } from './settings.service';
+import { ActiveOrg } from '../../auth/active-org.decorator';
 
 @Controller('settings')
 export class SettingsController {
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(private readonly settingsService: SettingsService) { }
 
   @Post('/instance/create')
   async createInstance() {
@@ -28,5 +29,10 @@ export class SettingsController {
   @Post('/instance/restart')
   async restartInstance() {
     return this.settingsService.restartInstance();
+  }
+
+  @Post('/members/link')
+  async linkManualMember(@ActiveOrg() orgId: string, @Body() body: { userId: string, role: string }) {
+    return this.settingsService.linkManualMember(orgId, body.userId, body.role);
   }
 }

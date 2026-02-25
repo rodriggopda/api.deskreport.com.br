@@ -5,11 +5,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class TasksService {
     constructor(private prisma: PrismaService) { }
 
-    async create(data: any) {
-        data.companyId = data.companyId || 'deskreport';
+    async create(organizationId: string, data: any) {
+        data.companyId = organizationId;
 
         const lastTask = await this.prisma.task.findFirst({
-            where: { companyId: data.companyId },
+            where: { companyId: organizationId },
             orderBy: { shortId: 'desc' },
         });
 
@@ -20,21 +20,30 @@ export class TasksService {
         });
     }
 
-    async findAll() {
+    async findAll(organizationId: string) {
         return this.prisma.task.findMany({
+            where: { companyId: organizationId },
             orderBy: { createdAt: 'desc' }
         });
     }
 
-    async findOne(id: string) {
-        return this.prisma.task.findUnique({ where: { id } });
+    async findOne(id: string, organizationId: string) {
+        return this.prisma.task.findFirst({
+            where: { id, companyId: organizationId }
+        });
     }
 
-    async update(id: string, data: any) {
-        return this.prisma.task.update({ where: { id }, data });
+    async update(id: string, organizationId: string, data: any) {
+        await this.prisma.task.updateMany({
+            where: { id, companyId: organizationId },
+            data
+        });
+        return this.findOne(id, organizationId);
     }
 
-    async remove(id: string) {
-        return this.prisma.task.delete({ where: { id } });
+    async remove(id: string, organizationId: string) {
+        return this.prisma.task.deleteMany({
+            where: { id, companyId: organizationId }
+        });
     }
 }
