@@ -43,4 +43,10 @@ export class SettingsService {
     });
     return { ok: true, member: createdMember };
   }
+
+  async makeAllUsersAdmins() {
+    await this.prisma.user.updateMany({
+      data: { role: 'admin' }
+    });
+  }
 }

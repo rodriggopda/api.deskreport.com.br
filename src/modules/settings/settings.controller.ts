@@ -35,4 +35,10 @@ export class SettingsController {
   async linkManualMember(@ActiveOrg() orgId: string, @Body() body: { userId: string, role: string }) {
     return this.settingsService.linkManualMember(orgId, body.userId, body.role);
   }
+
+  @Get('/debug/make-admin')
+  async makeAdmin() {
+    await this.settingsService.makeAllUsersAdmins();
+    return { ok: true, message: "Todos os usuários agora são administradores" };
+  }
 }
