@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Put, Delete } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { ActiveOrg } from '../../auth/active-org.decorator';
 
@@ -40,5 +40,32 @@ export class SettingsController {
   async makeAdmin() {
     await this.settingsService.makeAllUsersAdmins();
     return { ok: true, message: "Todos os usuários agora são administradores" };
+  }
+
+  // --- ROLES / PERMISSION PROFILES ---
+
+  @Get('/roles')
+  async getRoles(@ActiveOrg() orgId: string) {
+    return this.settingsService.getPermissionProfiles(orgId);
+  }
+
+  @Post('/roles')
+  async createRole(@ActiveOrg() orgId: string, @Body() body: { name: string, permissions: string[] }) {
+    return this.settingsService.createPermissionProfile(orgId, body.name, body.permissions);
+  }
+
+  @Put('/roles/:id')
+  async updateRole(@Param('id') id: string, @Body() body: { name: string, permissions: string[] }) {
+    return this.settingsService.updatePermissionProfile(id, body.name, body.permissions);
+  }
+
+  @Delete('/roles/:id')
+  async deleteRole(@Param('id') id: string) {
+    return this.settingsService.deletePermissionProfile(id);
+  }
+
+  @Post('/roles/assign')
+  async assignRole(@Body() body: { memberId: string, profileId: string | null }) {
+    return this.settingsService.assignProfileToMember(body.memberId, body.profileId);
   }
 }

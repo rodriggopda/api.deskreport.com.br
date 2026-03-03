@@ -13,6 +13,11 @@ const prisma = new PrismaClient({ adapter });
 
 export const auth = betterAuth({
     database: prismaAdapter(prisma, { provider: 'postgresql' }),
+    advanced: {
+        database: {
+            generateId: "uuid"
+        }
+    },
     trustedOrigins: [
         "http://10.0.0.150:5173",
         "http://10.0.0.150:5174",
@@ -24,8 +29,45 @@ export const auth = betterAuth({
     emailAndPassword: {
         enabled: true,
     },
+    databaseHooks: {
+        user: {
+            create: {
+                after: async (user) => {
+                    // Busca a primeira organização do sistema
+                    const firstOrg = await prisma.organization.findFirst();
+                    if (firstOrg) {
+                        // Se existir uma organização, vincula o novo usuário a ela como 'member'
+                        await prisma.member.create({
+                            data: {
+                                organizationId: firstOrg.id,
+                                userId: user.id,
+                                role: 'member',
+                                createdAt: new Date()
+                            }
+                        });
+                        console.log(`Usuário ${user.email} vinculado automaticamente à organização ${firstOrg.name}`);
+                    }
+                }
+            }
+        }
+    },
     plugins: [
-        admin(),
+        admin({
+            isAuthorized: async (session) => {
+                // 1. Se for admin global, permite sempre
+                if (session.user.role === 'admin') return true;
+
+                // 2. Se for Owner ou Admin de uma organização, permite criar usuários
+                const member = await prisma.member.findFirst({
+                    where: {
+                        userId: session.user.id,
+                        role: { in: ['owner', 'admin'] }
+                    }
+                });
+
+                return !!member;
+            }
+        } as any),
         organization()
     ],
     organization: {

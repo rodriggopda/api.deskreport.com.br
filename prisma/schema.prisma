@@ -28,7 +28,7 @@ model Task {
 }
 
 model User {
-  id            String    @id
+  id            String    @id @default(uuid())
   name          String
   email         String
   emailVerified Boolean
@@ -52,7 +52,7 @@ model User {
 }
 
 model Session {
-  id                   String   @id
+  id                   String   @id @default(uuid())
   expiresAt            DateTime
   token                String
   createdAt            DateTime
@@ -68,7 +68,7 @@ model Session {
 }
 
 model Account {
-  id                    String    @id
+  id                    String    @id @default(uuid())
   accountId             String
   providerId            String
   userId                String
@@ -87,7 +87,7 @@ model Account {
 }
 
 model Verification {
-  id         String    @id
+  id         String    @id @default(uuid())
   identifier String
   value      String
   expiresAt  DateTime
@@ -98,7 +98,7 @@ model Verification {
 }
 
 model Organization {
-  id        String   @id
+  id        String   @id @default(uuid())
   name      String
   slug      String?  @unique
   logo      String?
@@ -109,18 +109,35 @@ model Organization {
 }
 
 model Member {
-  id             String   @id
+  id             String   @id @default(uuid())
   organizationId String
   userId         String
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   role           String
   createdAt      DateTime
 
+  roleProfileId String?            @map("role_profile_id")
+  roleProfile   PermissionProfile? @relation(fields: [roleProfileId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, userId])
   @@map("member")
 }
 
+model PermissionProfile {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  permissions    String[] // Array de IDs de permissão (ex: ["tasks_create", "auto_bots_read"])
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  members Member[]
+
+  @@map("permission_profiles")
+}
+
 model Invitation {
-  id             String   @id
+  id             String   @id @default(uuid())
   organizationId String
   email          String
   role           String?
