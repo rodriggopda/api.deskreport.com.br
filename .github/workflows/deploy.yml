@@ -18,10 +18,14 @@ jobs:
           node-version: 20
           # cache: 'npm'
 
-      - name: Install & Build
-        run: |
-          npm install --legacy-peer-deps
-          npm run build
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Build Project
+        run: npm run build
 
       - name: Copy dist to Oracle Cloud
         uses: appleboy/scp-action@master
