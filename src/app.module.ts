@@ -6,6 +6,7 @@ import { TasksModule } from './modules/tasks/tasks.module';
 import { AuthModule } from './auth/auth.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { TeamsModule } from './modules/teams/teams.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     AuthModule,
     ProjectsModule,
     DashboardModule,
+    TeamsModule,
   ],
   controllers: [],
   providers: [],
