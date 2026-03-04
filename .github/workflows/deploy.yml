@@ -33,7 +33,7 @@ jobs:
           host: ${{ secrets.REMOTE_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "dist/*,package.json,package-lock.json" # Manda o build e os arquivos de dependência
+          source: "dist/*,package.json,package-lock.json,prisma/schema.prisma"
           target: "~/deskreport"
 
       - name: Restart PM2 via SSH
