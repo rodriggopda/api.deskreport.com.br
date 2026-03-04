@@ -41,26 +41,30 @@ export class DashboardService {
     async getWorkload(organizationId: string) {
         const members = await this.prisma.member.findMany({
             where: { organizationId },
-            include: { user: true } // Assuming Member relation to User, which is declared in Prisma schema
-        });
-
-        const activeTasks = await this.prisma.task.groupBy({
-            by: ['assigneeId'],
-            where: {
-                companyId: organizationId,
-                status: { notIn: ['done', 'completed'] },
-                assigneeId: { not: null }
-            },
-            _count: { id: true }
+            include: {
+                user: {
+                    include: {
+                        _count: {
+                            select: {
+                                assignedTasks: {
+                                    where: {
+                                        companyId: organizationId,
+                                        status: { notIn: ['done', 'completed'] }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         });
 
         return members.map(member => {
-            const taskStat = activeTasks.find(t => t.assigneeId === member.userId);
             return {
                 user_id: member.userId,
                 name: member.user.name,
                 email: member.user.email,
-                active_tasks_count: taskStat ? taskStat._count.id : 0,
+                active_tasks_count: (member.user as any)._count?.assignedTasks || 0,
             };
         });
     }
@@ -81,7 +85,7 @@ export class DashboardService {
             },
             orderBy: { dueDate: 'asc' },
             take: 10,
-            include: { assignee: { select: { id: true, name: true, image: true } } }
+            include: { assignees: { select: { id: true, name: true, image: true } } }
         });
     }
 

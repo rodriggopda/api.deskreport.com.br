@@ -13,14 +13,13 @@ model Task {
   title      String
   project    String
   reporterId String?   @map("reporter_id")
-  assigneeId String?   @map("assignee_id")
+  assignees  User[]    @relation("task_assignees")
   teamId     String?   @map("team_id")
   status     String    @default("todo")
   priority   String    @default("medium")
   tags       Json?
   dueDate    DateTime? @map("due_date")
 
-  assignee  User?    @relation("assignedTasks", fields: [assigneeId], references: [id], onDelete: SetNull)
   team      Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -47,7 +46,7 @@ model User {
   members            Member[]
   invitations        Invitation[]
   projectAssignments ProjectAssignment[]
-  assignedTasks      Task[]              @relation("assignedTasks")
+  assignedTasks      Task[]              @relation("task_assignees")
   teamMembers        TeamMember[]
 
   @@unique([email])
