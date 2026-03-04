@@ -7,18 +7,19 @@ datasource db {
 }
 
 model Task {
-  id         String    @id @default(uuid())
-  companyId  String    @map("company_id")
-  shortId    Int       @map("short_id")
-  title      String
-  project    String
-  reporterId String?   @map("reporter_id")
-  assignees  User[]    @relation("task_assignees")
-  teamId     String?   @map("team_id")
-  status     String    @default("todo")
-  priority   String    @default("medium")
-  tags       Json?
-  dueDate    DateTime? @map("due_date")
+  id          String    @id @default(uuid())
+  companyId   String    @map("company_id")
+  shortId     Int       @map("short_id")
+  title       String
+  project     String
+  description String?
+  reporterId  String?   @map("reporter_id")
+  assignees   User[]    @relation("task_assignees")
+  teamId      String?   @map("team_id")
+  status      String    @default("todo")
+  priority    String    @default("medium")
+  tags        Json?
+  dueDate     DateTime? @map("due_date")
 
   team      Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now()) @map("created_at")
