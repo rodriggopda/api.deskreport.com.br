@@ -24,14 +24,22 @@ export class TasksService {
                     connect: assigneeIds.map((id: string) => ({ id }))
                 } : undefined
             },
-            include: { assignees: true, team: true }
+            include: {
+                assignees: true,
+                team: true,
+                comments: { include: { user: true }, orderBy: { createdAt: 'desc' } }
+            }
         });
     }
 
     async findAll(organizationId: string) {
         return this.prisma.task.findMany({
             where: { companyId: organizationId },
-            include: { assignees: true, team: true },
+            include: {
+                assignees: true,
+                team: true,
+                comments: { include: { user: true }, orderBy: { createdAt: 'desc' } }
+            },
             orderBy: { createdAt: 'desc' }
         });
     }
@@ -39,7 +47,11 @@ export class TasksService {
     async findOne(id: string, organizationId: string) {
         return this.prisma.task.findFirst({
             where: { id, companyId: organizationId },
-            include: { assignees: true, team: true }
+            include: {
+                assignees: true,
+                team: true,
+                comments: { include: { user: true }, orderBy: { createdAt: 'asc' } }
+            }
         });
     }
 
@@ -53,6 +65,18 @@ export class TasksService {
                 assignees: assigneeIds ? {
                     set: assigneeIds.map((id: string) => ({ id }))
                 } : undefined
+            }
+        });
+
+        return this.findOne(id, organizationId);
+    }
+
+    async addComment(id: string, organizationId: string, userId: string, content: string) {
+        await this.prisma.taskComment.create({
+            data: {
+                taskId: id,
+                userId,
+                content
             }
         });
 

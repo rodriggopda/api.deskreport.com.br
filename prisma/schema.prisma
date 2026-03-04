@@ -21,12 +21,27 @@ model Task {
   tags        Json?
   dueDate     DateTime? @map("due_date")
 
-  team      Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  team      Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  comments  TaskComment[]
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
 
   @@unique([companyId, shortId])
   @@map("tasks")
+}
+
+model TaskComment {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  userId    String   @map("user_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("task_comments")
 }
 
 model User {
@@ -49,6 +64,7 @@ model User {
   projectAssignments ProjectAssignment[]
   assignedTasks      Task[]              @relation("task_assignees")
   teamMembers        TeamMember[]
+  taskComments       TaskComment[]
 
   @@unique([email])
   @@map("user")

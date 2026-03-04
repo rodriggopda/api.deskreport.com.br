@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Param, Put, Delete } from '@nestjs/common';
 import { TasksService } from './tasks.service';
 import { ActiveOrg } from '../../auth/active-org.decorator';
+import { ActiveUser } from '../../auth/active-user.decorator';
 
 @Controller('tasks')
 export class TasksController {
@@ -24,6 +25,16 @@ export class TasksController {
     @Put(':id')
     update(@ActiveOrg() orgId: string, @Param('id') id: string, @Body() data: any) {
         return this.tasksService.update(id, orgId, data);
+    }
+
+    @Post(':id/comments')
+    addComment(
+        @ActiveOrg() orgId: string,
+        @ActiveUser() userId: string,
+        @Param('id') id: string,
+        @Body('content') content: string
+    ) {
+        return this.tasksService.addComment(id, orgId, userId, content);
     }
 
     @Delete(':id')
