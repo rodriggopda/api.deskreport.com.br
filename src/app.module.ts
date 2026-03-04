@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { TeamsModule } from './modules/teams/teams.module';
+import { GithubModule } from './modules/github/github.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { TeamsModule } from './modules/teams/teams.module';
     ProjectsModule,
     DashboardModule,
     TeamsModule,
+    GithubModule,
   ],
   controllers: [],
   providers: [],

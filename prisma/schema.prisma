@@ -20,6 +20,8 @@ model Task {
   priority    String    @default("medium")
   tags        Json?
   dueDate     DateTime? @map("due_date")
+  externalId  String?   @map("external_id")
+  source      String    @default("local") // local, github
 
   team      Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
   comments  TaskComment[]
@@ -179,10 +181,26 @@ model Project {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  teams       ProjectTeam[]
-  assignments ProjectAssignment[]
+  teams             ProjectTeam[]
+  assignments       ProjectAssignment[]
+  githubIntegration GitHubIntegration?
 
   @@map("projects")
+}
+
+model GitHubIntegration {
+  id                  String   @id @default(uuid())
+  projectId           String   @unique @map("project_id")
+  accessToken         String   @map("access_token")
+  githubOwner         String   @map("github_owner")
+  githubRepo          String?  @map("github_repo")
+  githubProjectNumber Int?     @map("github_project_number")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("github_integrations")
 }
 
 model ProjectTeam {
