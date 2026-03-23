@@ -194,6 +194,7 @@ model GitHubIntegration {
   accessToken         String   @map("access_token")
   githubOwner         String   @map("github_owner")
   githubRepo          String?  @map("github_repo")
+  repos               Json? // [{ owner: string, repo: string }]
   githubProjectNumber Int?     @map("github_project_number")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
