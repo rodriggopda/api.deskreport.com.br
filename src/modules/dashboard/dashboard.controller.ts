@@ -1,10 +1,16 @@
 import { Controller, Get } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { ActiveOrg } from '../../auth/active-org.decorator';
+import { ActiveUser } from '../../auth/active-user.decorator';
 
 @Controller('dashboard')
 export class DashboardController {
     constructor(private readonly dashboardService: DashboardService) { }
+
+    @Get('home')
+    getHome(@ActiveOrg() orgId: string, @ActiveUser() user: any) {
+        return this.dashboardService.getHomeData(orgId, user.id);
+    }
 
     @Get('summary')
     getSummary(@ActiveOrg() orgId: string) {

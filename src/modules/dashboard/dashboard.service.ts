@@ -168,4 +168,70 @@ export class DashboardService {
             };
         });
     }
+
+    async getHomeData(organizationId: string, userId: string) {
+        const [user, org, summary, upcoming, projectsHealth] = await Promise.all([
+            this.prisma.user.findFirst({ where: { id: userId } }),
+            this.prisma.organization.findFirst({ where: { id: organizationId } }),
+            this.getSummary(organizationId),
+            this.getUpcomingDeadlines(organizationId),
+            this.getProjectHealth(organizationId),
+        ]);
+
+        const metadata = JSON.parse(org?.metadata || '{}');
+
+        // 1. Checklist "Foco Principal"
+        const checklist = [
+            {
+                id: 'profile',
+                title: 'Completar perfil',
+                description: 'Imagem, telefone e dados básicos.',
+                completed: !!(user?.image && user?.name && user?.email),
+            },
+            {
+                id: 'plan',
+                title: 'Configurar plano',
+                description: 'Escolha um plano para sua organização.',
+                completed: !!metadata?.planId,
+            },
+            {
+                id: 'integrations',
+                title: 'Configurar integrações',
+                description: 'Conecte seus canais de comunicação.',
+                completed: !!metadata?.integrationsCount || false,
+            },
+            {
+                id: 'teams',
+                title: 'Configurar equipes',
+                description: 'Adicione membros aos seus times.',
+                completed: summary.active_members > 1,
+            },
+            {
+                id: 'projects',
+                title: 'Configurar projetos',
+                description: 'Crie seu primeiro projeto.',
+                completed: summary.total_projects > 0,
+            },
+            {
+                id: 'tasks',
+                title: 'Configurar tarefas',
+                description: 'Organize suas demandas diárias.',
+                completed: summary.total_tasks > 0,
+            },
+        ];
+
+        // 2. Radar de Operações (Itens que requerem atenção)
+        const radar = {
+            at_risk_projects: projectsHealth.filter(p => p.status === 'at_risk'),
+            delayed_projects: projectsHealth.filter(p => p.status === 'delayed'),
+            upcoming_tasks: upcoming,
+            overdue_count: summary.overdue_tasks,
+        };
+
+        return {
+            checklist,
+            radar,
+            summary
+        };
+    }
 }
