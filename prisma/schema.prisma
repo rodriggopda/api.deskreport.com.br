@@ -1,0 +1,280 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Task {
+  id          String    @id @default(uuid())
+  companyId   String    @map("company_id")
+  shortId     Int       @map("short_id")
+  title       String
+  project     String
+  description String?
+  reporterId  String?   @map("reporter_id")
+  assignees   User[]    @relation("task_assignees")
+  teamId      String?   @map("team_id")
+  status      String    @default("todo")
+  priority    String    @default("medium")
+  tags        Json?
+  dueDate     DateTime? @map("due_date")
+  // Tokens que os agentes gastaram na tarefa e o orçamento máximo dela
+  tokensUsed  Int       @default(0) @map("tokens_used")
+  tokenBudget Int       @default(50000) @map("token_budget")
+
+  team      Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  comments  TaskComment[]
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  @@unique([companyId, shortId])
+  @@map("tasks")
+}
+
+model TaskComment {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  userId    String   @map("user_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("task_comments")
+}
+
+model User {
+  id            String    @id @default(uuid())
+  name          String
+  email         String
+  emailVerified Boolean
+  image         String?
+  createdAt     DateTime
+  updatedAt     DateTime
+  role          String?
+  banned        Boolean?
+  banReason     String?
+  banExpires    DateTime?
+
+  sessions           Session[]
+  accounts           Account[]
+  members            Member[]
+  invitations        Invitation[]
+  projectAssignments ProjectAssignment[]
+  assignedTasks      Task[]              @relation("task_assignees")
+  teamMembers        TeamMember[]
+  taskComments       TaskComment[]
+  agentChatMessages  AgentChatMessage[]
+
+  @@unique([email])
+  @@map("user")
+}
+
+model Session {
+  id                   String   @id @default(uuid())
+  expiresAt            DateTime
+  token                String
+  createdAt            DateTime
+  updatedAt            DateTime
+  ipAddress            String?
+  userAgent            String?
+  userId               String
+  activeOrganizationId String?
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([token])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(uuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime
+  updatedAt             DateTime
+
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id @default(uuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime?
+  updatedAt  DateTime?
+
+  @@map("verification")
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String?  @unique
+  logo      String?
+  createdAt DateTime
+  metadata  String?
+
+  @@map("organization")
+}
+
+model Member {
+  id             String   @id @default(uuid())
+  organizationId String
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           String
+  createdAt      DateTime
+
+  roleProfileId String?            @map("role_profile_id")
+  roleProfile   PermissionProfile? @relation(fields: [roleProfileId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, userId])
+  @@map("member")
+}
+
+model PermissionProfile {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  permissions    String[] // Array de IDs de permissão (ex: ["tasks_create", "auto_bots_read"])
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  members Member[]
+
+  @@map("permission_profiles")
+}
+
+model Invitation {
+  id             String   @id @default(uuid())
+  organizationId String
+  email          String
+  role           String?
+  status         String
+  expiresAt      DateTime
+  inviterId      String
+  user           User     @relation(fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@map("invitation")
+}
+
+model Project {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  name           String
+  description    String?
+  // Pasta do projeto dentro do Workspace da máquina, onde o agente roda
+  folder         String?
+  status         String    @default("active") // active, archived
+  startDate      DateTime? @map("start_date")
+  endDate        DateTime? @map("end_date")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  teams       ProjectTeam[]
+  assignments ProjectAssignment[]
+
+  @@map("projects")
+}
+
+model ProjectTeam {
+  projectId String  @map("project_id")
+  teamId    String  @map("team_id")
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  team      Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, teamId])
+  @@map("project_teams")
+}
+
+model ProjectAssignment {
+  id        String   @id @default(uuid())
+  projectId String   @map("project_id")
+  userId    String   @map("user_id")
+  role      String   @default("member")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_assignments")
+}
+
+model Team {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  members  TeamMember[]
+  tasks    Task[]
+  projects ProjectTeam[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(uuid())
+  teamId    String   @map("team_id")
+  userId    String   @map("user_id")
+  role      String   @default("member")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@map("team_members")
+}
+
+model AgentMachine {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  name           String
+  tokenHash      String    @unique @map("token_hash")
+  tokenPrefix    String    @map("token_prefix")
+  workspaceRoot  String    @map("workspace_root")
+  // Cargos de cada agente nesta máquina, ex.: { "claude": ["engineering", "devops"] }
+  agentRoles     Json?     @map("agent_roles")
+  lastSeenAt     DateTime? @map("last_seen_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([organizationId])
+  @@map("agent_machines")
+}
+
+// Conversa de um usuário com um agente no Chat Lateral. ownerId é o dono da conversa e userId quem escreveu (ele ou o agente)
+// Sem ownerId é a sala do time: agent é quem enviou e targetAgent quem recebe (vazio quando vai para o time todo)
+model AgentChatMessage {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  agent          String
+  ownerId        String?  @map("owner_id")
+  userId         String   @map("user_id")
+  targetAgent    String?  @map("target_agent")
+  taskId         String?  @map("task_id")
+  content        String
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, agent, ownerId])
+  @@map("agent_chat_messages")
+}

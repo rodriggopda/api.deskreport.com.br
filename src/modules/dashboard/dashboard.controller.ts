@@ -1,0 +1,39 @@
+import { Controller, Get } from '@nestjs/common';
+import { DashboardService } from './dashboard.service';
+import { ActiveOrg } from '../../auth/active-org.decorator';
+import { ActiveUser } from '../../auth/active-user.decorator';
+
+@Controller('dashboard')
+export class DashboardController {
+    constructor(private readonly dashboardService: DashboardService) { }
+
+    @Get('home')
+    getHome(@ActiveOrg() orgId: string, @ActiveUser() user: any) {
+        return this.dashboardService.getHomeData(orgId, user.id);
+    }
+
+    @Get('summary')
+    getSummary(@ActiveOrg() orgId: string) {
+        return this.dashboardService.getSummary(orgId);
+    }
+
+    @Get('workload')
+    getWorkload(@ActiveOrg() orgId: string) {
+        return this.dashboardService.getWorkload(orgId);
+    }
+
+    @Get('upcoming-deadlines')
+    getUpcomingDeadlines(@ActiveOrg() orgId: string) {
+        return this.dashboardService.getUpcomingDeadlines(orgId);
+    }
+
+    @Get('project-health')
+    getProjectHealth(@ActiveOrg() orgId: string) {
+        return this.dashboardService.getProjectHealth(orgId);
+    }
+
+    @Get('task-trends')
+    getTaskTrends(@ActiveOrg() orgId: string) {
+        return this.dashboardService.getTaskTrends(orgId);
+    }
+}
