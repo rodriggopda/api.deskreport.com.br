@@ -38,7 +38,7 @@ describe('AuthService', () => {
 
     const result = await service.signup(email, password, name);
 
-    expect(auth.signUp.email).toHaveBeenCalledWith({ email, password, name });
+    expect((auth as any).signUp.email).toHaveBeenCalledWith({ email, password, name });
     expect(result.user.id).toBe('u1');
   });
 
@@ -48,7 +48,7 @@ describe('AuthService', () => {
 
     const result = await service.forgotPassword(email);
 
-    expect(auth.forgetPassword).toHaveBeenCalledWith({
+    expect((auth as any).forgetPassword).toHaveBeenCalledWith({
       email,
       redirectTo: '/reset-password',
     });

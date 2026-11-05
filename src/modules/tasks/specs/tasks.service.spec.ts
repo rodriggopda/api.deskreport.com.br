@@ -88,5 +88,33 @@ describe('TasksService', () => {
         expect(result.id).toBe(id);
     });
   });
-});
 
+  describe('update', () => {
+    it('should only update allowed fields', async () => {
+      prisma.task.findFirst.mockResolvedValue({ id: 'task-1' });
+
+      await service.update('task-1', 'org-1', { title: 'Novo', companyId: 'org-2', shortId: 99 });
+
+      const { data } = prisma.task.update.mock.calls[0][0];
+      expect(data.title).toBe('Novo');
+      expect(data.companyId).toBeUndefined();
+      expect(data.shortId).toBeUndefined();
+    });
+
+    it('should not update a task from another organization', async () => {
+      prisma.task.findFirst.mockResolvedValue(null);
+
+      await expect(service.update('task-x', 'org-1', { title: 'Hack' })).rejects.toThrow('Task not found');
+      expect(prisma.task.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('addComment on another organization', () => {
+    it('should not create the comment', async () => {
+      prisma.task.findFirst.mockResolvedValue(null);
+
+      await expect(service.addComment('task-x', 'org-1', 'user-1', 'oi')).rejects.toThrow('Task not found');
+      expect(prisma.taskComment.create).not.toHaveBeenCalled();
+    });
+  });
+});

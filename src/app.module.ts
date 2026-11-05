@@ -13,6 +13,7 @@ import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { BackupModule } from './modules/backup/backup.module';
+import { AgentsModule } from './modules/agents/agents.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { BackupModule } from './modules/backup/backup.module';
     BillingModule,
     ReportsModule,
     BackupModule,
+    AgentsModule,
   ],
   controllers: [],
   providers: [],

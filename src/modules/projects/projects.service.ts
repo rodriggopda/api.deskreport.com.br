@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { checkProjectPath } from '../agents/agents.service';
 
 export interface CreateProjectDto {
     name: string;
     description?: string;
+    folder?: string;
     startDate?: string | Date;
     endDate?: string | Date;
     status?: string;
@@ -15,6 +17,7 @@ export class ProjectsService {
     constructor(private prisma: PrismaService) { }
 
     async create(organizationId: string, { teamIds, ...data }: CreateProjectDto) {
+        checkProjectPath(data.folder);
         return this.prisma.project.create({
             data: {
                 organizationId,
@@ -83,7 +86,15 @@ export class ProjectsService {
         });
     }
 
-    async update(id: string, organizationId: string, { teamIds, ...data }: Partial<CreateProjectDto>) {
+    async update(id: string, organizationId: string, data: Partial<CreateProjectDto>) {
+        const project = await this.findOne(id, organizationId);
+        if (!project) {
+            throw new NotFoundException('Project not found');
+        }
+
+        const { name, description, folder, startDate, endDate, status, teamIds } = data;
+        checkProjectPath(folder);
+
         if (teamIds) {
             // Reset teams
             await this.prisma.projectTeam.deleteMany({
@@ -103,7 +114,7 @@ export class ProjectsService {
 
         await this.prisma.project.update({
             where: { id },
-            data,
+            data: { name, description, folder, startDate, endDate, status },
         });
 
         return this.findOne(id, organizationId);

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -56,12 +56,21 @@ export class TasksService {
     }
 
     async update(id: string, organizationId: string, data: any) {
-        const { assigneeIds, ...rest } = data;
+        await this.ensureTaskInOrg(id, organizationId);
+
+        const { title, description, project, status, priority, tags, dueDate, teamId, assigneeIds } = data;
 
         await this.prisma.task.update({
             where: { id },
             data: {
-                ...rest,
+                title,
+                description,
+                project,
+                status,
+                priority,
+                tags,
+                dueDate,
+                teamId,
                 assignees: assigneeIds ? {
                     set: assigneeIds.map((id: string) => ({ id }))
                 } : undefined
@@ -72,6 +81,8 @@ export class TasksService {
     }
 
     async addComment(id: string, organizationId: string, userId: string, content: string) {
+        await this.ensureTaskInOrg(id, organizationId);
+
         await this.prisma.taskComment.create({
             data: {
                 taskId: id,
@@ -81,6 +92,17 @@ export class TasksService {
         });
 
         return this.findOne(id, organizationId);
+    }
+
+    private async ensureTaskInOrg(id: string, organizationId: string) {
+        const task = await this.prisma.task.findFirst({
+            where: { id, companyId: organizationId },
+            select: { id: true }
+        });
+
+        if (!task) {
+            throw new NotFoundException('Task not found');
+        }
     }
 
     async remove(id: string, organizationId: string) {

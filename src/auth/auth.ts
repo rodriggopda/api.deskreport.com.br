@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { admin, organization } from 'better-auth/plugins';
 import 'dotenv/config';
+import { allowedOrigins } from '../origins';
 
 const connectionString = process.env.DATABASE_URL;
 const pool = new Pool({ connectionString });
@@ -18,14 +19,7 @@ export const auth = betterAuth({
             generateId: "uuid"
         }
     },
-    trustedOrigins: [
-        "http://10.0.0.150:5173",
-        "http://10.0.0.150:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://localhost:5173",
-        "http://localhost:5174",
-    ],
+    trustedOrigins: allowedOrigins,
     emailAndPassword: {
         enabled: true,
     },

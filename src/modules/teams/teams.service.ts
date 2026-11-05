@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -61,7 +61,15 @@ export class TeamsService {
     }
 
     async update(id: string, organizationId: string, data: any) {
-        const { members, ...teamData } = data;
+        const team = await this.prisma.team.findFirst({
+            where: { id, organizationId },
+            select: { id: true }
+        });
+        if (!team) {
+            throw new NotFoundException('Team not found');
+        }
+
+        const { name, description, members } = data;
 
         // If members are provided, we replace them
         if (members) {
@@ -80,7 +88,7 @@ export class TeamsService {
 
         return this.prisma.team.update({
             where: { id },
-            data: teamData,
+            data: { name, description },
             include: {
                 members: {
                     include: {

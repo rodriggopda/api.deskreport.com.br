@@ -1,2 +1,2 @@
 -- AlterTable
-ALTER TABLE "github_integrations" ADD COLUMN     "repos" JSONB;
+ALTER TABLE IF EXISTS "github_integrations" ADD COLUMN     "repos" JSONB;

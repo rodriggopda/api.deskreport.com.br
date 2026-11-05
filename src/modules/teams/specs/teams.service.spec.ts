@@ -62,6 +62,7 @@ describe('TeamsService', () => {
       const organizationId = 'org-1';
       const updateData = { name: 'New Name', members: ['user-3'] };
 
+      prisma.team.findFirst.mockResolvedValue({ id });
       prisma.team.update.mockResolvedValue({ id, name: 'New Name' });
 
       await service.update(id, organizationId, updateData);
@@ -83,6 +84,14 @@ describe('TeamsService', () => {
         where: { id },
         data: { name: 'New Name' }
       }));
+    });
+
+    it('should not touch a team from another organization', async () => {
+      prisma.team.findFirst.mockResolvedValue(null);
+
+      await expect(service.update('team-x', 'org-1', { name: 'Hack', members: ['user-1'] })).rejects.toThrow('Team not found');
+      expect(prisma.teamMember.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.team.update).not.toHaveBeenCalled();
     });
   });
 });

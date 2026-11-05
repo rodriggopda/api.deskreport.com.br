@@ -59,6 +59,7 @@ export class PrismaServiceMock {
   };
   member = {
     findUnique: jest.fn(),
+    upsert: jest.fn(),
     findMany: jest.fn(),
     findFirst: jest.fn(),
     create: jest.fn(),
@@ -81,11 +82,23 @@ export class PrismaServiceMock {
     count: jest.fn(),
   };
   user = {
+    upsert: jest.fn(),
     findMany: jest.fn(),
     findFirst: jest.fn(),
     update: jest.fn(),
     findUnique: jest.fn(),
     count: jest.fn(),
+  };
+  agentMachine = {
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+    deleteMany: jest.fn(),
+  };
+  agentChatMessage = {
+    findMany: jest.fn(),
+    create: jest.fn(),
   };
   organization = {
     findFirst: jest.fn(),
@@ -100,3 +113,5 @@ export class PrismaServiceMock {
     count: jest.fn(),
   };
 }
+
+export const mockPrismaService = new PrismaServiceMock();
