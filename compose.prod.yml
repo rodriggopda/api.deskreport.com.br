@@ -9,8 +9,14 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3335
+    # Anexos das tarefas ficam fora do container para sobreviver ao deploy
+    volumes:
+      - deskreport-uploads:/app/uploads
     networks:
       - dokploy-network
+
+volumes:
+  deskreport-uploads:
 
 networks:
   dokploy-network:

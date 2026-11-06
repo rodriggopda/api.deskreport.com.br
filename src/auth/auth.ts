@@ -27,23 +27,37 @@ export const auth = betterAuth({
         user: {
             create: {
                 after: async (user) => {
-                    // Busca a primeira organização do sistema
-                    const firstOrg = await prisma.organization.findFirst();
-                    if (firstOrg) {
-                        // Se existir uma organização, vincula o novo usuário a ela como 'member'
-                        await prisma.member.create({
-                            data: {
-                                organizationId: firstOrg.id,
-                                userId: user.id,
-                                role: 'member',
-                                createdAt: new Date()
-                            }
-                        });
-                        console.log(`Usuário ${user.email} vinculado automaticamente à organização ${firstOrg.name}`);
-                    }
-                }
-            }
-        }
+                    // Usuários de sistema dos agentes não criam organizações próprias
+                    if (user.id.startsWith('agent-user-') || user.email.endsWith('@agents.deskreport.com.br')) return;
+
+                    // Todo novo usuário humano cria a sua própria organização isolada como owner
+                    const safeSlug = (user.name || 'workspace')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\u0300-\u036f]/g, '')
+                        .replace(/[^a-z0-9]/g, '-')
+                        .replace(/-+/g, '-')
+                        .slice(0, 20) + '-' + Math.random().toString(36).slice(2, 6);
+
+                    const org = await prisma.organization.create({
+                        data: {
+                            name: `Workspace de ${user.name || user.email.split('@')[0]}`,
+                            slug: safeSlug,
+                            createdAt: new Date(),
+                        },
+                    });
+
+                    await prisma.member.create({
+                        data: {
+                            organizationId: org.id,
+                            userId: user.id,
+                            role: 'owner',
+                            createdAt: new Date(),
+                        },
+                    });
+                },
+            },
+        },
     },
     plugins: [
         admin({

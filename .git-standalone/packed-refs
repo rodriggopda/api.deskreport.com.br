@@ -1,0 +1,4 @@
+# pack-refs with: peeled fully-peeled sorted 
+9648952dc8511395cbd9d6d4c5a5c5be2b7a24e0 refs/remotes/origin/develop
+a1bae486de7feb832883e6a68ccc8f4f83fc3616 refs/remotes/origin/feat/github-projects-integration
+e92dc6446fdd75dba439798f7b4b38e5ef2e73f0 refs/remotes/origin/main

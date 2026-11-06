@@ -24,13 +24,32 @@ model Task {
   tokensUsed  Int       @default(0) @map("tokens_used")
   tokenBudget Int       @default(50000) @map("token_budget")
 
-  team      Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  comments  TaskComment[]
+  team         Team?              @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  comments     TaskComment[]
+  chatSessions AgentChatSession[]
+  attachments  TaskAttachment[]
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
   @@unique([companyId, shortId])
   @@map("tasks")
+}
+
+// Arquivo anexado na tarefa, gravado em uploads/attachments/<companyId>/<taskId>
+model TaskAttachment {
+  id        String   @id @default(uuid())
+  companyId String   @map("company_id")
+  taskId    String   @map("task_id")
+  filename  String
+  path      String
+  size      Int
+  mimeType  String   @map("mime_type")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, taskId])
+  @@map("task_attachments")
 }
 
 model TaskComment {
@@ -69,6 +88,7 @@ model User {
   teamMembers        TeamMember[]
   taskComments       TaskComment[]
   agentChatMessages  AgentChatMessage[]
+  agentChatSessions  AgentChatSession[]
 
   @@unique([email])
   @@map("user")
@@ -265,6 +285,7 @@ model AgentMachine {
 model AgentChatMessage {
   id             String   @id @default(uuid())
   organizationId String   @map("organization_id")
+  sessionId      String?  @map("session_id")
   agent          String
   ownerId        String?  @map("owner_id")
   userId         String   @map("user_id")
@@ -273,8 +294,33 @@ model AgentChatMessage {
   content        String
   createdAt      DateTime @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session AgentChatSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
+  @@index([organizationId, sessionId])
   @@index([organizationId, agent, ownerId])
   @@map("agent_chat_messages")
+}
+
+// Sessão do Chat Lateral: nova sessão limpa o contexto do agente. externalId é o id da conversa na CLI (agy --conversation, claude --resume)
+model AgentChatSession {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")
+  agent          String
+  title          String   @default("Nova conversa")
+  projectPath    String?  @map("project_path")
+  taskId         String?  @map("task_id")
+  externalId     String?  @map("external_id")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task     Task?              @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  messages AgentChatMessage[]
+
+  @@index([organizationId, agent, userId])
+  @@index([organizationId, updatedAt])
+  @@map("agent_chat_sessions")
 }

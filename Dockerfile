@@ -10,6 +10,7 @@ COPY prisma ./prisma
 RUN DATABASE_URL=postgresql://build:build@localhost:5432/build pnpm install --frozen-lockfile
 
 COPY . .
+RUN DATABASE_URL=postgresql://build:build@localhost:5432/build pnpm db:generate
 RUN DATABASE_URL=postgresql://build:build@localhost:5432/build pnpm build
 
 CMD ["sh", "-c", "pnpm db:deploy && node dist/main"]

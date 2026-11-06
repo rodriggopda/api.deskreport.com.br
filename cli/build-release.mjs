@@ -1,5 +1,5 @@
-// Gera os pacotes do deskreport-client para Linux, macOS Apple Silicon e Windows
-// Saída: ../deskreport.com.br/public/downloads/deskreport-linux.tar.gz, deskreport-macos-arm64.tar.gz e deskreport-windows-x64.tar.gz
+// Gera os pacotes do deskreport-client para Linux, macOS e Windows
+// Saída: ../deskreport.com.br/public/downloads/deskreport-linux.tar.gz, deskreport-macos.tar.gz e deskreport-windows-x64.tar.gz
 import { execFileSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -19,36 +19,35 @@ const packageJson = {
   dependencies: { 'socket.io-client': apiPackage.dependencies['socket.io-client'] },
 };
 
-const linuxLauncher = `#!/bin/sh
-DIR="$(dirname "$(readlink -f "$0")")"
-exec node "$DIR/deskreport-client.mjs" "$@"
-`;
-
-const macLauncher = `#!/bin/sh
-DIR="$(dirname "$(readlink -f "$0")")"
+// O app aberto pelo menu (Linux) ou pelo Finder (macOS) não herda o PATH do terminal, então procura o node
+const unixLauncher = `#!/bin/sh
+DIR="$(cd "$(dirname "$0")" && pwd)"
 NODE="node"
-if [ -x /opt/homebrew/bin/node ]; then NODE="/opt/homebrew/bin/node"; fi
+if ! command -v node >/dev/null 2>&1; then
+  for d in /opt/homebrew/bin /usr/local/bin "$HOME"/.nvm/versions/node/*/bin "$HOME"/.local/share/nvm/*/bin "$HOME"/.fnm/current/bin "$HOME"/.volta/bin; do
+    if [ -x "$d/node" ]; then NODE="$d/node"; break; fi
+  done
+fi
 exec "$NODE" "$DIR/deskreport-client.mjs" "$@"
 `;
 
-const macWidget = `#!/bin/sh
-exec "$HOME/.deskreport/bin/deskreport" --widget
-`;
-
 // Windows já vem com tar para extrair e o .cmd roda o client com o node do PATH
+// O .vbs abre o app do widget sem mostrar janela de terminal
 const windowsLauncher = '@echo off\r\nnode "%~dp0deskreport-client.mjs" %*\r\n';
-const windowsWidget = '@echo off\r\nnode "%~dp0deskreport-client.mjs" --widget\r\n';
+const windowsWidget = 'Set fso = CreateObject("Scripting.FileSystemObject")\r\ndir = fso.GetParentFolderName(WScript.ScriptFullName)\r\nCreateObject("WScript.Shell").Run "node """ & dir & "\\deskreport-client.mjs"" widget", 0, False\r\n';
 
 mkdirSync(outDir, { recursive: true });
-buildPackage('deskreport-linux.tar.gz', 'install.sh', { deskreport: linuxLauncher });
-buildPackage('deskreport-macos-arm64.tar.gz', 'install.sh', { deskreport: macLauncher, 'DeskReport Widget.command': macWidget });
-buildPackage('deskreport-windows-x64.tar.gz', 'install.ps1', { 'deskreport.cmd': windowsLauncher, 'DeskReport Widget.cmd': windowsWidget });
+buildPackage('deskreport-linux.tar.gz', 'install.sh', { deskreport: unixLauncher });
+buildPackage('deskreport-macos.tar.gz', 'install.sh', { deskreport: unixLauncher });
+buildPackage('deskreport-windows-x64.tar.gz', 'install.ps1', { 'deskreport.cmd': windowsLauncher, 'DeskReport.vbs': windowsWidget });
 
 function buildPackage(fileName, installer, launchers) {
   const staging = mkdtempSync(path.join(os.tmpdir(), 'deskreport-'));
 
   copyFileSync(path.join(cliDir, 'deskreport-client.mjs'), path.join(staging, 'deskreport-client.mjs'));
   copyFileSync(path.join(webPublic, installer), path.join(staging, installer));
+  copyFileSync(path.join(webPublic, 'deskreport-simbol.svg'), path.join(staging, 'icon.svg'));
+  copyFileSync(path.join(webPublic, 'deskreport-icon.png'), path.join(staging, 'icon.png'));
   writeFileSync(path.join(staging, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n');
   chmodSync(path.join(staging, installer), 0o755);
 

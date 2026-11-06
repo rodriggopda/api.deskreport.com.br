@@ -1,9 +1,9 @@
 // Client local do DeskReport: liga os agentes da máquina com a api.deskreport.com.br
 // Roda os agentes só quando o painel dispara uma tarefa e serve o widget em 127.0.0.1:4399
 // Uso: deskreport [start|setup|login|widget|mcp] [--widget] [--agent <agente>]
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,7 @@ const widgetUrl = `http://127.0.0.1:${localPort}/widget`;
 const configDir = path.join(os.homedir(), '.config', 'deskreport');
 const configPath = path.join(configDir, 'config.json');
 const statePath = path.join(configDir, 'state.json');
+const logPath = path.join(configDir, 'client.log');
 const agentLabels = { claude: 'Claude Code', opencode: 'OpenCode', antigravity: 'Antigravity', codex: 'Codex', gemini: 'Gemini', aider: 'Aider' };
 const agentBins = { claude: 'claude', opencode: 'opencode', antigravity: 'agy', codex: 'codex', gemini: 'gemini', aider: 'aider' };
 const agentNames = Object.keys(agentLabels);
@@ -85,11 +86,13 @@ function loadConfig() {
   return {
     apiUrl: process.env.DESKREPORT_API_URL || saved.apiUrl || 'https://api.deskreport.com.br',
     webUrl: process.env.DESKREPORT_WEB_URL || saved.webUrl || 'https://app.deskreport.com.br',
-    machineToken: process.env.DESKREPORT_MACHINE_TOKEN || process.env.DESKREPORT_DEV_TOKEN || saved.machineToken,
+    machineToken: process.env.DESKREPORT_MACHINE_TOKEN || saved.machineToken || process.env.DESKREPORT_DEV_TOKEN,
     workspaceRoot: root ? path.resolve(root) : '',
     organizationName: saved.organizationName,
     enabledAgents: Array.isArray(saved.enabledAgents) ? agentNames.filter((agent) => saved.enabledAgents.includes(agent)) : undefined,
     agentRoles: saved.agentRoles || defaultRoles,
+    models: saved.models,
+    alerts: saved.alerts !== false,
   };
 }
 
@@ -189,11 +192,39 @@ function connectSocket() {
   socket.on('agent:stop-task', stopTask);
 }
 
+// Resolve false quando a porta já está em uso, ou seja, outro DeskReport já está rodando
 function startLocalServer() {
-  createServer(handleLocal).listen(localPort, '127.0.0.1', () => {
-    console.log(`Widget em ${widgetUrl}`);
+  return new Promise((resolve) => {
+    const server = createServer(handleLocal);
+    server.on('error', () => resolve(false));
+    server.listen(localPort, '127.0.0.1', () => {
+      console.log(`Widget em ${widgetUrl}`);
+      resolve(true);
+    });
   });
 }
+
+async function isRunning() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${localPort}/health`, { signal: AbortSignal.timeout(1000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Sobe o client sem terminal: o processo filho fica solto e escreve o log em ~/.config/deskreport/client.log
+function startBackground(args) {
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const log = openSync(logPath, 'a');
+  spawn(process.execPath, [clientScript, ...args], {
+    detached: true,
+    stdio: ['ignore', log, log],
+    windowsHide: true,
+    env: { ...process.env, DESKREPORT_BACKGROUND: '1' },
+  }).unref();
+}
+
 
 function handleLocal(req, res) {
   // Bloqueia DNS rebinding: só atende quem chama pelo próprio 127.0.0.1 ou localhost
@@ -222,6 +253,17 @@ function handleLocal(req, res) {
   if (route === 'POST /config/agent-roles') return changeRoles(req, res);
   if (route === 'POST /quota/continue') return readJsonBody(req, (data) => sendJson(res, 200, { ok: continueAgent(data?.agent) }));
   if (route === 'POST /auth/start') return startAuth(res);
+  if (route === 'POST /config/preferences') return changePreferences(req, res);
+  if (route === 'POST /quit') return quit(res);
+  if (route === 'GET /health') return sendJson(res, 200, { ok: true });
+  if (route === 'POST /open-web') {
+    openUrl(config.webUrl);
+    return sendJson(res, 200, { ok: true });
+  }
+  if (route === 'GET /icon.svg') {
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml' }).end(iconSvg);
+    return;
+  }
   if (route === 'GET /widget') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(widgetHtml);
     return;
@@ -419,6 +461,83 @@ function syncInstructionFiles() {
   return written;
 }
 
+function changePreferences(req, res) {
+  readJsonBody(req, (data) => {
+    if (typeof data?.alerts === 'boolean') {
+      config.alerts = data.alerts;
+      saveConfig({ alerts: data.alerts });
+    }
+    if (typeof data?.autostart === 'boolean') {
+      try {
+        setAutostart(data.autostart);
+      } catch (error) {
+        console.log(`Falha ao configurar o início com o sistema: ${error.message}`);
+        return sendJson(res, 500, { error: 'Não consegui configurar o início com o sistema' });
+      }
+    }
+    sendJson(res, 200, { alerts: config.alerts, autostart: autostartOn() });
+    broadcast();
+  });
+}
+
+// Encerrar com agente rodando deixaria a tarefa sem resposta no painel
+function quit(res) {
+  if (Object.keys(running).length > 0) return sendJson(res, 409, { error: 'Há tarefas em execução. Pare as tarefas antes de encerrar' });
+  sendJson(res, 200, { ok: true });
+  console.log('Encerrado pelo widget');
+  setTimeout(() => process.exit(0), 200);
+}
+
+// Cada sistema tem seu jeito de abrir programas no login. Todos rodam o client com o node atual
+function autostartFile() {
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'LaunchAgents', 'br.com.deskreport.client.plist');
+  if (process.platform === 'win32') return path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'DeskReport.vbs');
+  return path.join(os.homedir(), '.config', 'autostart', 'deskreport.desktop');
+}
+
+function autostartOn() {
+  return existsSync(autostartFile());
+}
+
+function setAutostart(on) {
+  const file = autostartFile();
+  if (!on) {
+    rmSync(file, { force: true });
+    return;
+  }
+
+  let content = `[Desktop Entry]
+Type=Application
+Name=DeskReport
+Comment=Agentes do DeskReport em segundo plano
+Exec="${process.execPath}" "${clientScript}" start --background
+Terminal=false
+X-GNOME-Autostart-enabled=true
+`;
+  // O launchd encerra os filhos quando o processo principal sai, então no macOS o client roda direto
+  if (process.platform === 'darwin') {
+    content = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>br.com.deskreport.client</string>
+  <key>ProgramArguments</key>
+  <array><string>${process.execPath}</string><string>${clientScript}</string><string>start</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>${logPath}</string>
+  <key>StandardErrorPath</key><string>${logPath}</string>
+</dict>
+</plist>
+`;
+  }
+  // O .vbs roda sem abrir janela de terminal
+  if (process.platform === 'win32') {
+    content = `CreateObject("WScript.Shell").Run """${process.execPath}"" ""${clientScript}"" start --background", 0, False\r\n`;
+  }
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, content);
+}
+
 function startAuth(res) {
   sendJson(res, 202, { started: true });
   if (authPending) return;
@@ -437,6 +556,10 @@ function widgetState() {
     connected: Boolean(socket?.connected),
     hasToken: Boolean(config.machineToken),
     authPending,
+    alertsOn: config.alerts,
+    autostart: autostartOn(),
+    webUrl: config.webUrl,
+    busy: Object.keys(running).length > 0,
     organizationName: config.organizationName || '',
     workspaceRoot,
     workspaceName: path.basename(workspaceRoot) || workspaceRoot,
@@ -475,6 +598,52 @@ function sendTelemetry(status) {
     broadcast();
   }
   if (socket?.connected) socket.emit('machine:telemetry', data);
+}
+
+function cleanSummary(raw) {
+  if (!raw) return '';
+  const marker = raw.lastIndexOf('--- RESUMO DA ENTREGA ---');
+  const base = marker >= 0 ? raw.slice(marker + 25) : raw;
+
+  const lines = base.split('\n');
+  const filtered = [];
+  let skippingCommand = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (filtered.length > 0 && filtered[filtered.length - 1] !== '') filtered.push('');
+      continue;
+    }
+
+    if (trimmed.startsWith('$ ') || trimmed.startsWith('> ')) {
+      skippingCommand = true;
+      continue;
+    }
+
+    if (
+      trimmed.startsWith('exit=') ||
+      trimmed === '(no output)' ||
+      /^Parei com código \d+/i.test(trimmed) ||
+      /^\d+:\s*/.test(trimmed) ||
+      /^\d+-\s*/.test(trimmed) ||
+      /\|\s*\d+\s*[+-]+$/.test(trimmed) ||
+      /^\d+\s+files?\s+changed/i.test(trimmed) ||
+      /^\(?node:\d+\)?/i.test(trimmed)
+    ) {
+      continue;
+    }
+
+    if (/^[A-ZÁÉÍÓÚÀÂÊÔÃÕ].*/.test(trimmed) || trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      skippingCommand = false;
+    }
+
+    if (!skippingCommand) {
+      filtered.push(trimmed);
+    }
+  }
+
+  return filtered.join('\n').trim();
 }
 
 function finish(task, exitCode, summary, touchedFiles = [], stopped = false) {
@@ -592,21 +761,27 @@ function changeModel(req, res) {
 }
 
 // Com stream, o Claude Code devolve eventos em JSON, inclusive o uso da cota
-function agentCommand(agent, prompt, stream = false) {
+// Com session (Chat Lateral) o Antigravity e o Claude Code respondem em JSON, que traz o id da conversa para retomar na próxima mensagem
+function agentCommand(agent, prompt, stream = false, session) {
   const model = config.models?.[agent] ? ['--model', config.models[agent]] : [];
-  if (agent === 'antigravity') return ['agy', ['--dangerously-skip-permissions', ...model, '-p', prompt]];
+  const json = session ? ['--output-format', 'json'] : [];
+  if (agent === 'antigravity') {
+    const resume = session?.externalId ? ['--conversation', session.externalId] : [];
+    return ['agy', ['--dangerously-skip-permissions', ...resume, ...json, ...model, '-p', prompt]];
+  }
   if (agent === 'opencode') return ['opencode', ['run', '--auto', ...model, prompt]];
   if (agent === 'codex') return ['codex', ['exec', '--full-auto', ...model, prompt]];
   if (agent === 'gemini') return ['gemini', ['--yolo', ...model, '-p', prompt]];
   if (agent === 'aider') return ['aider', ['--yes-always', ...model, '--message', prompt]];
-  const output = stream ? ['--output-format', 'stream-json', '--verbose'] : [];
-  return ['claude', ['--permission-mode', 'bypassPermissions', ...output, ...model, '-p', prompt]];
+  const output = stream ? ['--output-format', 'stream-json', '--verbose'] : json;
+  const resume = session?.externalId ? ['--resume', session.externalId] : [];
+  return ['claude', ['--permission-mode', 'bypassPermissions', ...resume, ...output, ...model, '-p', prompt]];
 }
 
 // PATH usado para achar e rodar os agentes, incluindo onde os instaladores costumam colocar os binários
 function agentPath() {
   const home = os.homedir();
-  return [path.dirname(process.execPath), `${home}/.local/bin`, `${home}/.opencode/bin`, `${home}/.gemini/antigravity-cli/bin`, '/opt/homebrew/bin', process.env.PATH || ''].join(path.delimiter);
+  return [path.dirname(process.execPath), `${home}/.local/bin`, `${home}/.opencode/bin`, `${home}/.gemini/antigravity-cli/bin`, '/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || ''].join(path.delimiter);
 }
 
 function detectAgents() {
@@ -630,7 +805,7 @@ function isFile(file) {
   }
 }
 
-function runTask(task) {
+async function runTask(task) {
   const folder = task.projectPath || task.project;
   const cwd = path.resolve(workspaceRoot, folder || '');
 
@@ -650,8 +825,10 @@ function runTask(task) {
   notify(`${agentLabels[task.agent]} começou: ${task.title}`);
   sendTelemetry({ agent: task.agent, state: 'working', project: path.basename(cwd), action: `Iniciando: ${task.title}`, taskId: task.taskId });
 
+  await downloadAttachments(task);
+
   const stream = task.agent === 'claude';
-  const [bin, child] = startAgent(task.agent, buildPrompt(task), cwd, { DESKREPORT_TASK_ID: task.taskId }, stream);
+  const [bin, child] = startAgent(task.agent, buildPrompt(task, cwd), cwd, { DESKREPORT_TASK_ID: task.taskId }, stream);
 
   let output = '';
   let stopReason = '';
@@ -759,11 +936,11 @@ function runTask(task) {
       startNext(task.agent);
       return;
     }
-    const summary = [stopReason, output.trim()].filter(Boolean).join('\n\n');
+    const summary = cleanSummary([stopReason, output.trim()].filter(Boolean).join('\n\n'));
     execFile('git', ['status', '-s', '--', '.'], { cwd }, (error, stdout) => {
       const touchedFiles = error ? [] : stdout.split('\n').map((line) => line.trim()).filter(Boolean);
       // Parada pelo usuário nunca conta como sucesso, mesmo se o agente sair com 0
-      finish(task, stoppedByUser ? 1 : code ?? 1, summary.slice(-2000), touchedFiles, stoppedByUser);
+      finish(task, stoppedByUser ? 1 : code ?? 1, summary.slice(-3000), touchedFiles, stoppedByUser);
     });
   });
 }
@@ -820,8 +997,8 @@ function limitAlert(agent) {
 }
 
 // Abre o agente sem os segredos do client no ambiente
-function startAgent(agent, prompt, cwd, env = {}, stream = false) {
-  const [bin, args] = agentCommand(agent, prompt, stream);
+function startAgent(agent, prompt, cwd, env = {}, stream = false, session) {
+  const [bin, args] = agentCommand(agent, prompt, stream, session);
   const windows = process.platform === 'win32';
 
   const childEnv = { ...process.env };
@@ -842,12 +1019,12 @@ function startAgent(agent, prompt, cwd, env = {}, stream = false) {
   return [bin, child];
 }
 
-// Mensagem do Chat Lateral: roda o agente com o histórico e devolve a resposta para o painel
+// Mensagem do Chat Lateral: cada sessão do painel é uma conversa da CLI. Sessão nova começa com o contexto limpo
 function runChat(chat) {
   if (!enabledAgents.includes(chat.agent)) return;
 
-  function reply(content) {
-    socket.emit('machine:chat-reply', { agent: chat.agent, ownerId: chat.ownerId, content });
+  function reply(content, externalId) {
+    socket.emit('machine:chat-reply', { agent: chat.agent, ownerId: chat.ownerId, sessionId: chat.sessionId, externalId, content });
   }
 
   const problem = quotaProblem(chat.agent);
@@ -858,7 +1035,10 @@ function runChat(chat) {
     return reply(`Pasta ${chat.projectPath} não existe dentro de ${workspaceRoot}.`);
   }
 
-  const history = (chat.history || []).map((m) => `${m.author}: ${m.content}`).join('\n');
+  // Conversa retomada pela CLI já tem o histórico, só o OpenCode e os demais recebem a conversa no prompt
+  const resumable = chat.agent === 'claude' || chat.agent === 'antigravity';
+  const resumed = resumable && chat.externalId;
+  const history = resumed ? '' : (chat.history || []).map((m) => `${m.author}: ${m.content}`).join('\n');
   const prompt = [
     'Você está no Chat Lateral do DeskReport conversando com um membro do time.',
     history ? `Conversa até agora:\n${history}` : '',
@@ -871,11 +1051,22 @@ function runChat(chat) {
   ].filter(Boolean).join('\n\n');
 
   console.log(`Chat com ${chat.agent} em ${cwd}`);
-  const [bin, child] = startAgent(chat.agent, prompt, cwd);
+  const session = resumable ? { externalId: chat.externalId } : undefined;
+  const [bin, child] = startAgent(chat.agent, prompt, cwd, {}, false, session);
   let output = '';
-  child.stdout.on('data', (chunk) => { output = (output + chunk.toString().replace(/\x1b\[[0-9;]*m/g, '')).slice(-10000); });
+  child.stdout.on('data', (chunk) => { output = (output + chunk.toString().replace(/\x1b\[[0-9;]*m/g, '')).slice(-200000); });
   child.on('error', (error) => reply(`Não foi possível rodar ${bin}: ${error.message}`));
-  child.on('close', (code) => reply(output.trim() || `Parei com código ${code ?? 1} sem resposta.`));
+  child.on('close', (code) => {
+    const fallback = `Parei com código ${code ?? 1} sem resposta.`;
+    if (!session) return reply(output.trim() || fallback);
+    // agy devolve conversation_id e response, o Claude Code devolve session_id e result
+    try {
+      const data = JSON.parse(output);
+      reply(String(data.response ?? data.result ?? '').trim() || fallback, data.conversation_id || data.session_id);
+    } catch {
+      reply(output.trim().slice(-10000) || fallback);
+    }
+  });
 }
 
 // Outro agente chamou este pela sala do time: roda com o histórico e a resposta volta para quem chamou
@@ -914,33 +1105,78 @@ function runTeamMessage(msg) {
   child.on('close', (code) => reply(output.trim() || `Parei com código ${code ?? 1} sem resposta.`));
 }
 
+// Baixa os anexos da tarefa para a pasta do client, fora do repositório, e guarda o caminho local de cada um
+async function downloadAttachments(task) {
+  const dir = path.join(configDir, 'attachments', String(task.taskId).replace(/[^\w-]/g, '_'));
+  for (const attachment of task.attachments || []) {
+    try {
+      const res = await fetch(`${config.apiUrl}/agents/mcp/tasks/${encodeURIComponent(task.taskId)}/attachments/${encodeURIComponent(attachment.id)}/download`, {
+        headers: { Authorization: `Bearer ${config.machineToken}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) throw new Error(`Erro ${res.status}`);
+      mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, path.basename(attachment.filename));
+      writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+      attachment.localPath = file;
+    } catch (error) {
+      console.log(`Não consegui baixar o anexo ${attachment.filename}: ${error.message}`);
+    }
+  }
+}
+
+function attachmentsNote(task) {
+  const attachments = task.attachments || [];
+  if (attachments.length === 0) return '';
+  const lines = attachments.map((a) => `- ${a.filename} (${a.localPath ? `arquivo: ${a.localPath}` : 'não foi possível baixar'})`);
+  return [
+    'Anexos da tarefa:',
+    ...lines,
+    'Leia os anexos antes de começar. Specs em Markdown e textos descrevem o que deve ser feito, imagens mostram telas ou erros e patches ou logs trazem o contexto técnico.',
+  ].join('\n');
+}
+
 function plainText(html) {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 // Tarefa interrompida (cota ou client reiniciado) volta com o aviso e o último progresso
-function buildPrompt(task) {
-  if (!task.resumed) return taskPrompt(task);
+function buildPrompt(task, cwd) {
+  const prompt = [taskPrompt(task), gitContext(cwd)].filter(Boolean).join('\n\n');
+  if (!task.resumed) return prompt;
   return [
-    taskPrompt(task),
+    prompt,
     'Esta tarefa foi interrompida antes de terminar. Rode git status e git diff nesta pasta para ver o que já foi feito e continue de onde parou.',
     task.progress ? `Últimas saídas antes da parada:\n${task.progress}` : '',
   ].filter(Boolean).join('\n\n');
 }
 
+// Ponto em que o repositório está antes do agente começar: arquivos pendentes e últimos commits
+function gitContext(cwd) {
+  try {
+    const status = execFileSync('git', ['status', '-s'], { cwd, encoding: 'utf8', timeout: 10_000 }).trim();
+    const log = execFileSync('git', ['log', '-n', '3', '--oneline'], { cwd, encoding: 'utf8', timeout: 10_000 }).trim();
+    return [
+      'Estado atual do repositório:',
+      `git status -s:\n${status.slice(0, 3000) || '(sem alterações pendentes)'}`,
+      `git log -n 3 --oneline:\n${log}`,
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
 function taskPrompt(task) {
   const description = plainText(task.description || '');
-  // Comentários antigos dos agentes começavam com o nome em negrito, a API já filtra os novos
-  const humanComments = (task.comments || [])
-    .filter((c) => !/^<p><strong>(Claude Code|OpenCode|Antigravity|Codex|Gemini|Aider)<\/strong>/.test(c))
-    .map(plainText)
-    .filter(Boolean);
-  const notes = humanComments.length > 0 ? `Comentários de revisão na tarefa:\n- ${humanComments.join('\n- ')}` : '';
+  // Todos os comentários anteriores, de pessoas e de agentes, para continuar o trabalho do time
+  const comments = (task.comments || []).map(plainText).filter(Boolean);
+  const notes = comments.length > 0 ? `Comentários anteriores na tarefa:\n- ${comments.join('\n- ')}` : '';
 
   if (task.mode === 'comment') {
     return [
       `Tarefa do DeskReport: ${task.title}`,
       description,
+      attachmentsNote(task),
       notes,
       `Novo comentário para você: ${plainText(task.comment || '')}`,
       [
@@ -956,6 +1192,7 @@ function taskPrompt(task) {
     return [
       `Code Review da tarefa do DeskReport: ${task.title}`,
       description,
+      attachmentsNote(task),
       notes,
       [
         'Você é o revisor do time. Rode `git status -s -- .` e `git diff` nesta pasta e revise as alterações.',
@@ -967,7 +1204,18 @@ function taskPrompt(task) {
     ].filter(Boolean).join('\n\n');
   }
 
-  return [`Tarefa do DeskReport: ${task.title}`, description, notes].filter(Boolean).join('\n\n');
+  return [
+    `Tarefa do DeskReport: ${task.title}`,
+    description,
+    attachmentsNote(task),
+    notes,
+    [
+      'Ao finalizar a tarefa, responda no final apenas com um comentário claro e direto em português do que foi feito e da regra de negócio ajustada.',
+      'Nunca inclua no resumo final saídas de comandos (como $ cd, npx tsc, git diff, head), logs de terminal nem trechos longos de código.',
+      'Se algo não foi feito ou apresentou problema, termine com uma seção Impedimentos explicando o motivo.',
+      'Esse resumo final será o comentário publicado na tarefa.',
+    ].join('\n'),
+  ].filter(Boolean).join('\n\n');
 }
 
 // Registra o MCP deskreport nos agentes habilitados e tira dos desabilitados
@@ -1193,19 +1441,32 @@ function openUrl(url) {
   spawn(opener[0], opener[1], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
 }
 
+// Janela de aplicativo sem barra de endereço. O perfil próprio faz o widget abrir como um app separado
+// do navegador do usuário, com tamanho fixo e ícone próprio na barra de tarefas
 function openNativeWidget() {
-  const appArgs = [`--app=${widgetUrl}`, '--window-size=440,620'];
+  const appArgs = [
+    `--app=${widgetUrl}`,
+    '--window-size=420,680',
+    `--user-data-dir=${path.join(configDir, 'window')}`,
+    '--class=DeskReport',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ];
 
   if (process.platform === 'darwin') {
-    execFile('open', ['-na', 'Google Chrome', '--args', ...appArgs], (error) => {
-      if (error) openUrl(widgetUrl);
-    });
+    function tryMacApp(list) {
+      if (list.length === 0) return openUrl(widgetUrl);
+      execFile('open', ['-na', list[0], '--args', ...appArgs], (error) => {
+        if (error) tryMacApp(list.slice(1));
+      });
+    }
+    tryMacApp(['Google Chrome', 'Microsoft Edge', 'Brave Browser', 'Chromium']);
     return;
   }
 
   function tryBrowser(list) {
     if (list.length === 0) return openUrl(widgetUrl);
-    const child = spawn(list[0], [...appArgs, '--new-window'], { detached: true, stdio: 'ignore' });
+    const child = spawn(list[0], appArgs, { detached: true, stdio: 'ignore' });
     child.on('error', () => tryBrowser(list.slice(1)));
     child.unref();
   }
@@ -1224,6 +1485,7 @@ function openNativeWidget() {
 
 // urgent toca som e fica na tela até o usuário ver
 function notify(message, urgent = false) {
+  if (!config.alerts) return;
   if (process.platform === 'darwin') {
     const sound = urgent ? ' sound name "Glass"' : '';
     execFile('osascript', ['-e', `display notification ${JSON.stringify(message)} with title "DeskReport"${sound}`], () => {});
@@ -1254,428 +1516,255 @@ const connectedHtml = `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><
 <div style="text-align:center"><h1 style="font-size:20px">Máquina conectada ao DeskReport</h1>
 <p style="color:#a1a1aa">Pode fechar esta aba e voltar ao widget.</p></div></body></html>`;
 
+const iconSvg = `<svg width="31" height="30" viewBox="0 0 31 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path opacity="0.5" d="M15.5 2.5C13.0277 2.5 10.611 3.23311 8.55538 4.60663C6.49976 5.98015 4.89761 7.93238 3.95151 10.2165C3.00542 12.5005 2.75787 15.0139 3.24019 17.4386C3.72251 19.8634 4.91302 22.0907 6.66117 23.8388C8.40933 25.587 10.6366 26.7775 13.0614 27.2598C15.4861 27.7421 17.9995 27.4946 20.2836 26.5485C22.5676 25.6024 24.5199 24.0002 25.8934 21.9446C27.2669 19.889 28 17.4723 28 15" stroke="#3b82f6" stroke-width="4.2" stroke-linecap="round"/>
+<path d="M15.5 2.5C13.8585 2.5 12.233 2.82332 10.7165 3.45151C9.19989 4.07969 7.8219 5.00044 6.66116 6.16117C5.50043 7.3219 4.57969 8.69989 3.9515 10.2165C3.32332 11.733 3 13.3585 3 15C3 16.6415 3.32332 18.267 3.95151 19.7835C4.57969 21.3001 5.50043 22.6781 6.66117 23.8388C7.8219 24.9996 9.19989 25.9203 10.7165 26.5485C12.233 27.1767 13.8585 27.5 15.5 27.5" stroke="#3b82f6" stroke-width="4.2" stroke-linecap="round"/>
+<path d="M13 14.3678L15.7755 16.6667L23 8.33334" stroke="#3b82f6" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+
 const widgetHtml = `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<title>DeskReport Live</title>
+<title>DeskReport</title>
+<link rel="icon" href="/icon.svg">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   [hidden] { display: none !important; }
+  :root {
+    --bg: #0b0d12;
+    --surface: #12151c;
+    --surface-2: #181c25;
+    --line: #1f2430;
+    --text: #e8ebf2;
+    --muted: #8a92a6;
+    --faint: #5b6378;
+    --blue: #3b82f6;
+    --blue-soft: #16233d;
+    --blue-text: #93c5fd;
+    --red: #f87171;
+    --red-soft: #2a1618;
+    --amber: #fbbf24;
+    --amber-soft: #2a2112;
+  }
+  html, body { height: 100%; }
   body {
-    background: #09090b;
-    color: #f4f4f5;
-    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    height: 100vh;
-    display: flex;
-    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
     overflow: hidden;
+    user-select: none;
   }
-  #app {
-    width: 100%;
-    max-width: 440px;
-    height: 100%;
-    padding: 14px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  header {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #1f1f23;
-  }
-  .top {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .logo-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #3b82f6;
-    box-shadow: 0 0 10px #3b82f688;
-  }
-  h1 { font-size: 14px; font-weight: 600; color: #fafafa; letter-spacing: -0.01em; }
-  h2 { font-size: 14px; font-weight: 600; color: #fafafa; }
-  .panel-head { display: flex; flex-direction: column; gap: 3px; }
-  .panel-head p { font-size: 11px; color: #71717a; }
-  .toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 6px;
-  }
-  .org {
-    font-size: 11px;
-    color: #a1a1aa;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 130px;
-  }
-  .pills { display: flex; gap: 5px; align-items: center; }
-  .pill-btn {
-    background: #141417;
-    border: 1px solid #27272a;
-    border-radius: 9999px;
-    padding: 4px 10px;
-    font-size: 11px;
-    font-weight: 500;
-    color: #d4d4d8;
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 120px;
-  }
-  .pill-btn:hover { background: #27272a; color: #fafafa; }
-  .conn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 8px;
-    border-radius: 9999px;
-    background: #141417;
-    border: 1px solid #27272a;
-    font-size: 10px;
-    color: #a1a1aa;
-  }
-  .dot { width: 6px; height: 6px; border-radius: 50%; background: #71717a; }
-  .on { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
-  .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-  .scroll {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: #27272a transparent;
-  }
-  .group-card {
-    background: #121215;
-    border: 1px solid #27272a;
-    border-radius: 16px;
-    overflow: hidden;
-  }
-  .group-card > * {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  }
-  .group-card > *:last-child {
-    border-bottom: none;
-  }
-  .primary {
-    background: #fafafa;
-    color: #09090b;
-    border-radius: 12px;
-    padding: 9px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    border: 0;
-    cursor: pointer;
-    transition: opacity 0.15s;
-  }
-  .primary:hover { opacity: 0.9; }
-  .ghost {
-    background: #18181b;
-    color: #d4d4d8;
-    border: 1px solid #27272a;
-    border-radius: 12px;
-    padding: 9px 14px;
-    font-size: 12px;
-    font-weight: 500;
-    border: 0;
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  .ghost:hover { background: #27272a; }
-  .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 4px; }
+  button { font: inherit; color: inherit; }
+  input { font: inherit; }
+  #app { height: 100%; display: flex; flex-direction: column; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 16px 18px 12px; }
+  header svg { width: 26px; height: 26px; flex: none; }
+  .title { flex: 1; min-width: 0; }
+  .title strong { display: block; font-size: 14px; font-weight: 600; }
+  .title span { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); padding: 4px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); }
+  .status i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .status.on i { background: var(--blue); }
+  .status.on { color: var(--blue-text); }
+
+  nav { display: flex; gap: 4px; margin: 0 18px 12px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+  nav button { flex: 1; padding: 7px 0; border: 0; background: none; border-radius: 9px; color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; }
+  nav button:hover { color: var(--text); }
+  nav button.active { background: var(--surface-2); color: var(--text); }
+
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 0 18px 18px; }
+  .scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 2px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+  .list > * + * { border-top: 1px solid var(--line); }
+  .muted { color: var(--muted); }
+  .empty { padding: 22px 16px; text-align: center; color: var(--muted); font-size: 12px; }
+  .error { padding: 10px 14px; color: var(--red); font-size: 12px; }
+  .notice { padding: 10px 14px; color: var(--blue-text); font-size: 12px; }
+
+  .primary, .ghost, .danger { border: 0; border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .primary { background: var(--blue); color: #fff; }
+  .primary:hover { background: #2f74e6; }
+  .primary:disabled { opacity: 0.5; cursor: default; }
+  .ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+  .ghost:hover { background: #1f2430; }
+  .danger { background: var(--red-soft); color: var(--red); }
+  .small { padding: 6px 10px; font-size: 11px; border-radius: 8px; }
+  .actions { display: flex; gap: 8px; }
   .actions button { flex: 1; }
-  .path {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    color: #a1a1aa;
-    background: #141417;
-    border: 1px solid #27272a;
-    border-radius: 12px;
-    padding: 8px 12px;
-    word-break: break-all;
-  }
-  .dir-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    padding: 10px 14px;
-    background: none;
-    border: 0;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  .dir-item:hover { background: #1c1c22; }
-  .dir-item-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-  }
-  .dir-icon {
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-    background: #1c1c22;
-    border: 1px solid #27272a;
-    display: grid;
-    place-items: center;
-    font-size: 12px;
-    flex: none;
-  }
-  .dir-name {
-    font-size: 12px;
-    color: #e4e4e7;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .dir-chevron { color: #52525b; font-size: 14px; }
-  .empty, .error { font-size: 12px; color: #71717a; padding: 16px; text-align: center; }
-  .empty-card { padding: 16px; color: #a1a1aa; font-size: 12px; text-align: center; }
-  .error { color: #f87171; }
-  .agent-card {
-    display: flex;
-    gap: 12px;
-    padding: 12px 14px;
-    background: #121215;
-    border: 1px solid #27272a;
-    border-radius: 16px;
-    margin-bottom: 8px;
-    transition: border-color 0.15s;
-  }
-  .agent-card.working {
-    border-color: rgba(34, 197, 94, 0.4);
-    box-shadow: 0 0 16px rgba(34, 197, 94, 0.08);
-  }
-  .agent-card.paused {
-    border-color: rgba(239, 68, 68, 0.4);
-  }
-  .avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    font-size: 11px;
-    font-weight: 700;
-    flex: none;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-  }
-  .info { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
-  .row { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-  .name { font-weight: 600; font-size: 13px; color: #fafafa; }
-  .state-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 8px;
-    border-radius: 9999px;
-    font-size: 10px;
-    font-weight: 500;
-    background: #18181b;
-    border: 1px solid #27272a;
-    color: #a1a1aa;
-  }
-  .working .state-badge {
-    background: rgba(34, 197, 94, 0.12);
-    border-color: rgba(34, 197, 94, 0.3);
-    color: #4ade80;
-  }
-  .paused .state-badge {
-    background: rgba(239, 68, 68, 0.12);
-    border-color: rgba(239, 68, 68, 0.3);
-    color: #f87171;
-  }
-  .working .state-badge .dot { background: #22c55e; animation: pulse 1.2s infinite; }
-  .paused .state-badge .dot { background: #f87171; }
-  .sub { font-size: 11px; color: #a1a1aa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .action { font-family: ui-monospace, monospace; font-size: 11px; color: #38bdf8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .option {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  .option:hover { background: #1c1c22; }
-  .option input { margin: 0; accent-color: #fafafa; width: 15px; height: 15px; }
-  .option .name { flex: 1; font-size: 12px; }
-  .roles summary { font-size: 11px; color: #a1a1aa; padding: 0 14px 10px 41px; cursor: pointer; }
-  .roles summary:hover { color: #fafafa; }
+
+  .hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 12px; padding: 0 12px; }
+  .hero svg { width: 52px; height: 52px; }
+  .hero h2 { font-size: 17px; font-weight: 600; }
+  .hero p { color: var(--muted); font-size: 12px; max-width: 280px; }
+  .hero .primary { margin-top: 8px; width: 100%; max-width: 280px; }
+
+  .agent { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .agent.working { border-color: #24406e; }
+  .agent.paused { border-color: #4a2427; }
+  .agent-top { display: flex; align-items: center; gap: 12px; }
+  .avatar { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: var(--surface-2); color: var(--blue-text); border: 1px solid var(--line); flex: none; }
+  .working .avatar { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .agent-name { flex: 1; min-width: 0; }
+  .agent-name strong { display: block; font-size: 13px; font-weight: 600; }
+  .agent-name span { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip { font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+  .working .chip { background: var(--blue-soft); color: var(--blue-text); }
+  .paused .chip { background: var(--red-soft); color: var(--red); }
+  .chip.quota { background: var(--surface-2); color: var(--muted); }
+  .chip.quota.high { background: var(--amber-soft); color: var(--amber); }
+  .action { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); background: var(--bg); border-radius: 8px; padding: 7px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .working .action { color: var(--blue-text); }
+  .model { display: flex; gap: 6px; align-items: center; }
+  .model span { font-size: 11px; color: var(--faint); }
+  .model input { flex: 1; min-width: 0; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; outline: none; }
+  .model input:focus { border-color: var(--blue); }
+
+  .alert { background: var(--amber-soft); color: var(--amber); border-radius: 12px; padding: 12px 14px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .alert button { align-self: flex-start; background: var(--amber); color: #1a1405; border: 0; border-radius: 8px; padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; }
+
+  .log { display: flex; gap: 10px; padding: 9px 14px; font-size: 11px; }
+  .log b { color: var(--blue-text); font-weight: 600; flex: none; width: 24px; }
+  .log span { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log time { color: var(--faint); flex: none; }
+
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+  .row-text { flex: 1; min-width: 0; }
+  .row-text strong { display: block; font-size: 12px; font-weight: 500; }
+  .row-text span { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  button.row { width: 100%; border: 0; background: none; text-align: left; cursor: pointer; }
+  button.row:hover { background: var(--surface-2); }
+  .icon { width: 30px; height: 30px; border-radius: 8px; background: var(--surface-2); display: grid; place-items: center; font-size: 13px; flex: none; color: var(--muted); }
+  .chevron { color: var(--faint); font-size: 16px; }
+  .path { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); padding: 10px 14px; word-break: break-all; }
+
+  .switch { position: relative; width: 34px; height: 20px; flex: none; }
+  .switch input { appearance: none; position: absolute; inset: 0; margin: 0; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); cursor: pointer; }
+  .switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: transform 0.15s; }
+  .switch input:checked { background: var(--blue); border-color: var(--blue); }
+  .switch input:checked::after { transform: translateX(14px); background: #fff; }
+
+  .option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; cursor: pointer; }
+  .option .row-text { flex: 1; }
+  .option input[type=checkbox].pick { accent-color: var(--blue); width: 15px; height: 15px; margin: 0; }
+  .tag { font-size: 10px; color: var(--blue-text); background: var(--blue-soft); border-radius: 999px; padding: 2px 8px; }
+  .roles summary { font-size: 11px; color: var(--muted); padding: 0 14px 12px 41px; cursor: pointer; }
+  .roles summary:hover { color: var(--text); }
   .role { display: flex; align-items: center; gap: 10px; padding: 8px 14px 8px 41px; cursor: pointer; }
-  .role-text { flex: 1; min-width: 0; }
-  .role-name { font-size: 12px; }
-  .role-desc { font-size: 10px; color: #71717a; }
-  .role input { appearance: none; margin: 0; flex: none; width: 28px; height: 16px; border-radius: 999px; background: #27272a; position: relative; cursor: pointer; transition: background 0.15s; }
-  .role input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #a1a1aa; transition: transform 0.15s; }
-  .role input:checked { background: #22c55e; }
-  .role input:checked::after { transform: translateX(12px); background: #fff; }
-  .notice { font-size: 11px; color: #4ade80; padding: 10px 14px; text-align: center; }
-  .quota { font-size: 10px; color: #a1a1aa; }
-  .quota.high { color: #f59e0b; font-weight: 600; }
-  .model-form { display: flex; gap: 6px; margin-top: 4px; }
-  .model-form input {
-    flex: 1;
-    min-width: 0;
-    font: 11px ui-monospace, monospace;
-    color: #fafafa;
-    background: #09090b;
-    border: 1px solid #27272a;
-    border-radius: 8px;
-    padding: 4px 8px;
-  }
-  .model-form button {
-    font-size: 10px;
-    font-weight: 500;
-    color: #fafafa;
-    background: #27272a;
-    border: 0;
-    border-radius: 8px;
-    padding: 4px 10px;
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  .model-form button:hover { background: #3f3f46; }
-  .alert {
-    background: rgba(180, 83, 9, 0.15);
-    border: 1px solid rgba(245, 158, 11, 0.3);
-    color: #fde68a;
-    border-radius: 12px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
-    font-size: 11px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .alert button {
-    background: #f59e0b;
-    color: #09090b;
-    border-radius: 8px;
-    border: 0;
-    padding: 4px 10px;
-    font-weight: 600;
-    font-size: 11px;
-    align-self: flex-start;
-    cursor: pointer;
-  }
-  .badge {
-    font-size: 10px;
-    font-weight: 500;
-    color: #4ade80;
-    background: rgba(34, 197, 94, 0.12);
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    border-radius: 999px;
-    padding: 2px 8px;
-  }
-  @keyframes pulse { 50% { opacity: .3; } }
+  .role .row-text strong { font-size: 12px; }
+  .back { display: flex; align-items: center; gap: 8px; }
+  .back h2 { font-size: 14px; font-weight: 600; }
+  .back p { font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
 <div id="app">
   <header>
-    <div class="top">
-      <div class="brand">
-        <span class="logo-dot"></span>
-        <h1>DeskReport Live</h1>
-      </div>
-      <span class="conn"><span id="dot" class="dot"></span><span id="conn">Reconectando</span></span>
-    </div>
-    <div class="toolbar">
-      <span id="org" class="org" title="Organização"></span>
-      <div class="pills">
-        <button id="agentsButton" class="pill-btn">Agentes</button>
-        <button id="projectsButton" class="pill-btn">Projetos</button>
-        <button id="folder" class="pill-btn">Escolher pasta</button>
-      </div>
-    </div>
+    ${iconSvg}
+    <div class="title"><strong>DeskReport</strong><span id="org">Máquina não conectada</span></div>
+    <span id="status" class="status"><i></i><span id="conn">Desconectado</span></span>
   </header>
 
-  <section id="setup" class="panel" hidden>
-    <div class="panel-head">
-      <h2>Conectar Máquina</h2>
-      <p>Ligue este computador à organização para despachar e sincronizar tarefas.</p>
-    </div>
-    <div class="group-card empty-card">
-      <p>A máquina receberá tarefas dos projetos locais e executará os agentes selecionados.</p>
-    </div>
-    <button id="connect" class="primary">Conectar com DeskReport</button>
-  </section>
+  <nav id="tabs" hidden>
+    <button data-tab="agents" class="active">Agentes</button>
+    <button data-tab="projects">Projetos</button>
+    <button data-tab="settings">Ajustes</button>
+  </nav>
 
-  <section id="picker" class="panel" hidden>
-    <div class="panel-head">
-      <h2>Pasta do Workspace</h2>
-      <p>Escolha a pasta raiz onde estão os projetos.</p>
-    </div>
-    <div id="path" class="path"></div>
-    <div id="dirs" class="scroll group-card"></div>
-    <div class="actions">
-      <button id="cancel" class="ghost">Cancelar</button>
-      <button id="use" class="primary">Usar esta pasta</button>
-    </div>
-  </section>
+  <main>
+    <section id="setup" class="view" hidden>
+      <div class="hero">
+        ${iconSvg}
+        <h2>Conecte esta máquina</h2>
+        <p>Ligue o computador à sua organização para receber tarefas e rodar os agentes nos projetos locais.</p>
+        <button id="connect" class="primary">Conectar com DeskReport</button>
+      </div>
+    </section>
 
-  <section id="chooser" class="panel" hidden>
-    <div class="panel-head">
-      <h2>Agentes desta Máquina</h2>
-      <p>Marque os agentes que você utiliza e os cargos de cada um nesta estação de trabalho.</p>
-    </div>
-    <div id="options" class="scroll group-card"></div>
-    <div class="actions">
-      <button id="closeAgents" class="ghost">Cancelar</button>
-      <button id="saveAgents" class="primary">Salvar e Aplicar nos Agentes</button>
-    </div>
-  </section>
+    <section id="agentsView" class="view" hidden>
+      <div id="agents" class="scroll"></div>
+    </section>
 
-  <section id="projects" class="panel" hidden>
-    <div class="panel-head">
-      <h2>Pastas do Workspace</h2>
-      <p>Cada pasta vira um Projeto no DeskReport vinculado a esta máquina.</p>
-    </div>
-    <div id="folders" class="scroll group-card"></div>
-    <div class="actions">
-      <button id="closeProjects" class="ghost">Agora não</button>
-      <button id="syncProjects" class="primary">Sincronizar Projetos</button>
-    </div>
-  </section>
+    <section id="projectsView" class="view" hidden>
+      <div class="card list">
+        <button id="folder" class="row">
+          <span class="icon">⌂</span>
+          <span class="row-text"><strong id="folderName">Escolher pasta</strong><span id="folderPath">Pasta raiz dos projetos</span></span>
+          <span class="chevron">›</span>
+        </button>
+      </div>
+      <div class="label">Pastas que viram projetos</div>
+      <div id="folders" class="scroll"></div>
+      <button id="syncProjects" class="primary">Sincronizar projetos</button>
+    </section>
 
-  <div id="agents" class="scroll" hidden></div>
+    <section id="settingsView" class="view" hidden>
+      <div class="scroll">
+        <div class="label">Geral</div>
+        <div class="card list">
+          <label class="row">
+            <span class="row-text"><strong>Iniciar com o sistema</strong><span>Roda em segundo plano ao ligar o computador</span></span>
+            <span class="switch"><input id="autostart" type="checkbox"></span>
+          </label>
+          <label class="row">
+            <span class="row-text"><strong>Alertas no desktop</strong><span>Avisos de início, fim e cota dos agentes</span></span>
+            <span class="switch"><input id="alerts" type="checkbox"></span>
+          </label>
+        </div>
+        <div id="prefsError" class="error" hidden></div>
+
+        <div class="label">Máquina</div>
+        <div class="card list">
+          <button id="openChooser" class="row">
+            <span class="icon">◎</span>
+            <span class="row-text"><strong>Agentes e cargos</strong><span id="agentsSummary">Escolha os agentes desta máquina</span></span>
+            <span class="chevron">›</span>
+          </button>
+          <button id="changeFolder" class="row">
+            <span class="icon">⌂</span>
+            <span class="row-text"><strong>Pasta do workspace</strong><span id="settingsFolder">Nenhuma pasta escolhida</span></span>
+            <span class="chevron">›</span>
+          </button>
+          <button id="openWeb" class="row">
+            <span class="icon">↗</span>
+            <span class="row-text"><strong>Abrir o painel</strong><span>Tarefas e projetos no navegador</span></span>
+            <span class="chevron">›</span>
+          </button>
+        </div>
+
+        <div id="quitError" class="error" hidden></div>
+        <button id="quit" class="danger">Encerrar DeskReport</button>
+      </div>
+    </section>
+
+    <section id="picker" class="view" hidden>
+      <div class="back"><div><h2>Pasta do workspace</h2><p>Escolha a pasta raiz onde ficam os projetos.</p></div></div>
+      <div id="path" class="card path"></div>
+      <div id="dirs" class="scroll card list" style="gap:0"></div>
+      <div class="actions">
+        <button id="cancel" class="ghost">Cancelar</button>
+        <button id="use" class="primary">Usar esta pasta</button>
+      </div>
+    </section>
+
+    <section id="chooser" class="view" hidden>
+      <div class="back"><div><h2>Agentes desta máquina</h2><p>Marque os agentes que você usa e os cargos de cada um.</p></div></div>
+      <div id="options" class="scroll card list" style="gap:0"></div>
+      <div class="actions">
+        <button id="closeAgents" class="ghost">Cancelar</button>
+        <button id="saveAgents" class="primary">Salvar</button>
+      </div>
+    </section>
+  </main>
 </div>
 
 <script>
-  const colors = {
-    antigravity: ['#16a34a', 'AG'],
-    claude: ['#ea580c', 'CC'],
-    opencode: ['#2563eb', 'OC'],
-    codex: ['#0d9488', 'CX'],
-    gemini: ['#4f46e5', 'GM'],
-    aider: ['#ca8a04', 'AD'],
-  };
+  const initials = { antigravity: 'AG', claude: 'CC', opencode: 'OC', codex: 'CX', gemini: 'GM', aider: 'AD' };
+  const views = ['setup', 'agentsView', 'projectsView', 'settingsView', 'picker', 'chooser'];
   const list = document.getElementById('agents');
-  const setup = document.getElementById('setup');
-  const picker = document.getElementById('picker');
-  const chooser = document.getElementById('chooser');
-  const projects = document.getElementById('projects');
   const dirs = document.getElementById('dirs');
   const options = document.getElementById('options');
   const folders = document.getElementById('folders');
@@ -1683,103 +1772,90 @@ const widgetHtml = `<!doctype html>
   const connect = document.getElementById('connect');
   const events = new EventSource('/events');
 
-  let state = { catalog: [], roleCatalog: [], agents: [], hasToken: false, workspaceRoot: '', workspaceName: '', connected: false };
-  let picking = false;
-  let choosing = false;
-  let syncing = false;
+  let state = { catalog: [], roleCatalog: [], agents: [], logs: [], hasToken: false, workspaceRoot: '', workspaceName: '', connected: false };
+  let tab = 'agents';
+  let overlay = '';
   let pickerPath = '';
 
-  function line(className, text) {
-    const div = document.createElement('div');
-    div.className = className;
-    div.textContent = text;
-    return div;
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function rowText(title, subtitle) {
+    const text = el('span', 'row-text');
+    text.append(el('strong', '', title), el('span', '', subtitle));
+    return text;
   }
 
   function show() {
-    picker.hidden = !picking;
-    chooser.hidden = picking || !choosing;
-    projects.hidden = picking || choosing || !syncing;
-    setup.hidden = picking || choosing || syncing || state.hasToken;
-    list.hidden = picking || choosing || syncing || !state.hasToken;
+    let current = overlay;
+    if (!current) current = state.hasToken ? tab + 'View' : 'setup';
+    for (const id of views) document.getElementById(id).hidden = id !== current;
+    document.getElementById('tabs').hidden = Boolean(overlay) || !state.hasToken;
     document.getElementById('cancel').hidden = !state.workspaceRoot;
+    for (const button of document.querySelectorAll('nav button')) button.classList.toggle('active', button.dataset.tab === tab);
   }
 
-  function setConnected(on) {
-    document.getElementById('conn').textContent = on ? 'Conectado' : state.hasToken ? 'Reconectando' : 'Desconectado';
-    document.getElementById('dot').className = on ? 'dot on' : 'dot';
+  function openTab(name) {
+    tab = name;
+    overlay = '';
+    if (name === 'projects') loadProjects();
+    show();
   }
 
-  function dirButton(name, target, isParent = false) {
-    const button = document.createElement('button');
-    button.className = 'dir-item';
-    const left = document.createElement('div');
-    left.className = 'dir-item-left';
-    const icon = line('dir-icon', isParent ? '⤴' : '📁');
-    const label = line('dir-name', name);
-    left.append(icon, label);
-    const chevron = line('dir-chevron', '›');
-    button.append(left, chevron);
+  async function postJson(url, body) {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    if (res.ok) return null;
+    return (await res.json()).error || 'Algo deu errado';
+  }
+
+  function dirButton(name, target, isParent) {
+    const button = el('button', 'row');
+    button.append(el('span', 'icon', isParent ? '↑' : '▸'), rowText(name, isParent ? 'Voltar uma pasta' : ''), el('span', 'chevron', '›'));
     button.onclick = function () { openPicker(target); };
     return button;
   }
 
   async function openPicker(dir) {
-    picking = true;
-    choosing = false;
-    syncing = false;
+    overlay = 'picker';
     show();
     const res = await fetch('/fs/dirs?path=' + encodeURIComponent(dir || ''));
     const data = await res.json();
-    if (!res.ok) {
-      dirs.replaceChildren(line('error', data.error));
-      return;
-    }
+    if (!res.ok) return dirs.replaceChildren(el('div', 'error', data.error));
 
     pickerPath = data.current;
     document.getElementById('path').textContent = data.current;
     const items = data.dirs.map(function (d) { return dirButton(d.name, d.path); });
     if (data.parent) items.unshift(dirButton('..', data.parent, true));
-    if (data.dirs.length === 0) items.push(line('empty', 'Nenhuma subpasta aqui'));
+    if (data.dirs.length === 0) items.push(el('div', 'empty', 'Nenhuma subpasta aqui'));
     dirs.replaceChildren(...items);
     dirs.scrollTop = 0;
   }
 
   async function useFolder() {
-    const res = await fetch('/config/workspace', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceRoot: pickerPath }),
-    });
-    if (!res.ok) {
-      dirs.prepend(line('error', (await res.json()).error));
-      return;
-    }
-    picking = false;
-    if (state.hasToken) openProjects();
+    const error = await postJson('/config/workspace', { workspaceRoot: pickerPath });
+    if (error) return dirs.prepend(el('div', 'error', error));
+    overlay = '';
+    if (state.hasToken) openTab('projects');
     else show();
   }
 
-  async function openProjects() {
-    syncing = true;
-    choosing = false;
-    syncButton.disabled = false;
-    syncButton.textContent = 'Sincronizar Projetos';
-    show();
+  async function loadProjects() {
+    syncButton.disabled = true;
+    syncButton.textContent = 'Sincronizar projetos';
     const data = await (await fetch('/projects/folders')).json();
     syncButton.disabled = data.folders.length === 0;
-    if (data.folders.length === 0) return folders.replaceChildren(line('empty', 'Nenhuma subpasta neste Workspace'));
-    folders.replaceChildren(...data.folders.map(function (name) {
-      const item = document.createElement('div');
-      item.className = 'dir-item';
-      const left = document.createElement('div');
-      left.className = 'dir-item-left';
-      const icon = line('dir-icon', '📦');
-      const label = line('dir-name', name);
-      left.append(icon, label);
-      item.append(left);
-      return item;
+    if (data.folders.length === 0) return folders.replaceChildren(el('div', 'card empty', state.workspaceRoot ? 'Nenhuma subpasta neste workspace' : 'Escolha a pasta do workspace primeiro'));
+    const card = el('div', 'card list');
+    card.append(...data.folders.map(function (name) {
+      const row = el('div', 'row');
+      row.append(el('span', 'icon', '▣'), rowText(name, ''));
+      return row;
     }));
+    folders.replaceChildren(card);
   }
 
   async function syncFolders() {
@@ -1788,51 +1864,39 @@ const widgetHtml = `<!doctype html>
     const res = await fetch('/projects/sync', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) {
-      folders.prepend(line('error', data.error));
+      folders.prepend(el('div', 'error', data.error));
       syncButton.disabled = false;
-      syncButton.textContent = 'Sincronizar Projetos';
+      syncButton.textContent = 'Sincronizar projetos';
       return;
     }
     syncButton.textContent = data.folders.length + ' projetos sincronizados';
   }
 
   function openChooser() {
-    choosing = true;
-    syncing = false;
-    picking = false;
+    overlay = 'chooser';
     options.replaceChildren(...state.catalog.map(function (a) {
-      const item = document.createElement('div');
-      const label = document.createElement('label');
-      label.className = 'option';
-      const input = document.createElement('input');
+      const item = el('div');
+      const label = el('label', 'option');
+      const input = el('input', 'pick agent-check');
       input.type = 'checkbox';
-      input.className = 'agent-check';
       input.value = a.agent;
       input.checked = a.enabled;
-      const avatar = line('avatar', colors[a.agent][1]);
-      avatar.style.background = colors[a.agent][0];
-      label.append(input, avatar, line('name', a.name));
-      if (a.detected) label.append(line('badge', 'Instalado'));
+      label.append(input, el('span', 'avatar', initials[a.agent]), rowText(a.name, a.detected ? 'Instalado nesta máquina' : 'Não encontrado no PATH'));
+      if (a.detected) label.append(el('span', 'tag', 'Instalado'));
 
-      const roles = document.createElement('details');
-      roles.className = 'roles';
+      const roles = el('details', 'roles');
       roles.hidden = !a.enabled;
       input.onchange = function () { roles.hidden = !input.checked; };
-      const summary = document.createElement('summary');
-      summary.textContent = 'Cargos e Funções';
-      roles.append(summary, ...state.roleCatalog.map(function (r) {
-        const row = document.createElement('label');
-        row.className = 'role';
-        const text = document.createElement('div');
-        text.className = 'role-text';
-        text.append(line('role-name', r.name), line('role-desc', r.description));
-        const toggle = document.createElement('input');
+      roles.append(el('summary', '', 'Cargos e funções'), ...state.roleCatalog.map(function (r) {
+        const row = el('label', 'role');
+        const toggle = el('input', 'role-check');
         toggle.type = 'checkbox';
-        toggle.className = 'role-check';
         toggle.dataset.agent = a.agent;
         toggle.value = r.role;
         toggle.checked = a.roles.includes(r.role);
-        row.append(text, toggle);
+        const knob = el('span', 'switch');
+        knob.append(toggle);
+        row.append(rowText(r.name, r.description), knob);
         return row;
       }));
       item.append(label, roles);
@@ -1841,116 +1905,145 @@ const widgetHtml = `<!doctype html>
     show();
   }
 
-  async function postJson(url, body) {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (res.ok) return null;
-    return (await res.json()).error;
-  }
-
   async function saveAgents() {
     const checked = Array.from(options.querySelectorAll('.agent-check:checked')).map(function (input) { return input.value; });
     const roles = {};
     for (const toggle of options.querySelectorAll('.role-check:checked')) {
       roles[toggle.dataset.agent] = (roles[toggle.dataset.agent] || []).concat(toggle.value);
     }
-
     const error = await postJson('/config/agents', { enabledAgents: checked }) || await postJson('/config/agent-roles', { roles: roles });
-    if (error) {
-      options.prepend(line('error', error));
-      return;
-    }
-    options.prepend(line('notice', 'Arquivos de configuração global dos agentes atualizados com sucesso'));
+    if (error) return options.prepend(el('div', 'error', error));
+    options.prepend(el('div', 'notice', 'Agentes e cargos salvos'));
     options.scrollTop = 0;
-    setTimeout(function () { choosing = false; show(); }, 1500);
+    setTimeout(function () { overlay = ''; show(); }, 1200);
   }
 
-  function renderAgents(agents) {
-    if (agents.length === 0) {
-      list.replaceChildren(line('empty', 'Nenhum agente ativo. Use o botão Agentes para escolher.'));
-      return;
-    }
-    if (list.contains(document.activeElement)) return;
-    const alerts = agents.filter(function (a) { return a.alert; }).map(function (a) {
-      const box = line('alert', a.alert);
-      if (a.quotaLevel !== 'stop') return box;
-      const go = document.createElement('button');
-      go.textContent = 'Continuar mesmo assim';
-      go.onclick = function () {
-        go.disabled = true;
-        fetch('/quota/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: a.agent }) });
-      };
-      box.append(go);
-      return box;
-    });
-    list.replaceChildren(...alerts, ...agents.map(function (a) {
-      const working = a.state === 'working';
-      const card = document.createElement('div');
-      card.className = 'agent-card' + (working ? ' working' : '') + (a.state === 'paused' ? ' paused' : '');
+  function agentCard(a) {
+    const working = a.state === 'working';
+    const paused = a.state === 'paused';
+    const card = el('div', 'card agent' + (working ? ' working' : '') + (paused ? ' paused' : ''));
 
-      const avatar = line('avatar', colors[a.agent][1]);
-      avatar.style.background = colors[a.agent][0];
+    const top = el('div', 'agent-top');
+    const name = el('div', 'agent-name');
+    name.append(el('strong', '', a.name), el('span', '', [a.project, a.task].filter(Boolean).join(' · ') || 'Sem tarefa no momento'));
+    top.append(el('span', 'avatar', initials[a.agent]), name);
+    if (a.quota !== null) top.append(el('span', 'chip quota' + (a.quota >= 40 ? ' high' : ''), 'Cota ' + a.quota + '%'));
+    top.append(el('span', 'chip', paused ? 'Pausado' : working ? 'Trabalhando' : 'Disponível'));
+    card.append(top);
+    if (a.action) card.append(el('div', 'action', a.action));
 
-      const head = document.createElement('div');
-      head.className = 'row';
-      head.append(line('name', a.name));
-      const status = line('state-badge', a.state === 'paused' ? 'Pausado' : working ? 'Trabalhando' : 'Disponível');
-      status.prepend(line('dot', ''));
-      if (a.quota !== null) status.prepend(line('quota' + (a.quota >= 40 ? ' high' : ''), 'Cota ' + a.quota + '%'));
-      head.append(status);
+    const model = el('form', 'model');
+    const input = el('input');
+    input.value = a.model;
+    input.placeholder = 'padrão';
+    input.setAttribute('aria-label', 'Modelo do ' + a.name);
+    model.append(el('span', '', 'Modelo'), input, el('button', 'ghost small', paused ? 'Trocar e retomar' : 'Usar'));
+    model.onsubmit = async function (event) {
+      event.preventDefault();
+      input.blur();
+      const error = await postJson('/config/models', { agent: a.agent, model: input.value });
+      if (error) window.alert(error);
+    };
+    card.append(model);
+    return card;
+  }
 
-      const model = document.createElement('form');
-      model.className = 'model-form';
-      const input = document.createElement('input');
-      input.value = a.model;
-      input.placeholder = 'Modelo padrão';
-      input.setAttribute('aria-label', 'Modelo do ' + a.name);
-      const save = document.createElement('button');
-      save.textContent = a.state === 'paused' ? 'Trocar e retomar' : 'Usar';
-      model.append(input, save);
-      model.onsubmit = async function (event) {
-        event.preventDefault();
-        input.blur();
-        const res = await fetch('/config/models', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: a.agent, model: input.value }),
-        });
-        if (!res.ok) window.alert((await res.json()).error);
-      };
+  function alertBox(a) {
+    const box = el('div', 'alert', a.alert);
+    if (a.quotaLevel !== 'stop') return box;
+    const go = el('button', '', 'Continuar mesmo assim');
+    go.onclick = function () {
+      go.disabled = true;
+      postJson('/quota/continue', { agent: a.agent });
+    };
+    box.append(go);
+    return box;
+  }
 
-      const info = document.createElement('div');
-      info.className = 'info';
-      info.append(head, line('sub', [a.project, a.task].filter(Boolean).join(' · ') || 'Sem tarefa'), line('action', a.action || ''), model);
-      card.append(avatar, info);
-      return card;
+  function activity(logs) {
+    const recent = logs.slice(-8).reverse();
+    if (recent.length === 0) return [];
+    const card = el('div', 'card list');
+    card.append(...recent.map(function (log) {
+      const row = el('div', 'log');
+      const time = el('time', '', new Date(log.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      row.append(el('b', '', initials[log.agent] || ''), el('span', '', log.action), time);
+      return row;
     }));
+    return [el('div', 'label', 'Atividade recente'), card];
+  }
+
+  function renderAgents() {
+    if (list.contains(document.activeElement)) return;
+    if (state.agents.length === 0) {
+      const empty = el('div', 'card empty', 'Nenhum agente ativo. Escolha os agentes em Ajustes.');
+      return list.replaceChildren(empty);
+    }
+    const alerts = state.agents.filter(function (a) { return a.alert; }).map(alertBox);
+    list.replaceChildren(...alerts, ...state.agents.map(agentCard), ...activity(state.logs || []));
   }
 
   function render(data) {
     state = data;
-    setConnected(data.connected);
+    const status = document.getElementById('status');
+    status.className = data.connected ? 'status on' : 'status';
+    document.getElementById('conn').textContent = data.connected ? 'Online' : data.hasToken ? 'Reconectando' : 'Desconectado';
     document.getElementById('org').textContent = data.organizationName || (data.hasToken ? 'Organização conectada' : 'Máquina não conectada');
-    document.getElementById('folder').textContent = data.workspaceName ? '📁 ' + data.workspaceName : 'Escolher pasta';
-    document.getElementById('folder').title = data.workspaceRoot || 'Escolher a pasta do Workspace';
+    document.getElementById('folderName').textContent = data.workspaceName || 'Escolher pasta';
+    document.getElementById('folderPath').textContent = data.workspaceRoot || 'Pasta raiz dos projetos';
+    document.getElementById('settingsFolder').textContent = data.workspaceRoot || 'Nenhuma pasta escolhida';
+    document.getElementById('agentsSummary').textContent = data.agents.map(function (a) { return a.name; }).join(', ') || 'Nenhum agente ativo';
+    document.getElementById('autostart').checked = data.autostart;
+    document.getElementById('alerts').checked = data.alertsOn;
+    document.getElementById('quit').disabled = data.busy;
     connect.disabled = data.authPending;
     connect.textContent = data.authPending ? 'Aguardando login no navegador...' : 'Conectar com DeskReport';
-    renderAgents(data.agents);
-    if (!data.workspaceRoot && !picking) openPicker('');
+    renderAgents();
+    if (!data.workspaceRoot && !overlay) openPicker('');
     show();
   }
 
+  async function changePreference(input, key) {
+    const prefsError = document.getElementById('prefsError');
+    const body = {};
+    body[key] = input.checked;
+    const error = await postJson('/config/preferences', body);
+    prefsError.hidden = !error;
+    prefsError.textContent = error || '';
+    if (error) input.checked = !input.checked;
+  }
+
+  async function quit() {
+    if (!window.confirm('Encerrar o DeskReport? Os agentes deixam de receber tarefas até você abrir de novo.')) return;
+    const quitError = document.getElementById('quitError');
+    const error = await postJson('/quit');
+    quitError.hidden = !error;
+    quitError.textContent = error || '';
+    if (error) return;
+    events.close();
+    document.getElementById('app').replaceChildren(el('div', 'hero', 'DeskReport encerrado. Pode fechar esta janela.'));
+    window.close();
+  }
+
+  for (const button of document.querySelectorAll('nav button')) button.onclick = function () { openTab(button.dataset.tab); };
   document.getElementById('folder').onclick = function () { openPicker(state.workspaceRoot); };
-  document.getElementById('cancel').onclick = function () { picking = false; show(); };
-  document.getElementById('agentsButton').onclick = openChooser;
-  document.getElementById('projectsButton').onclick = openProjects;
-  document.getElementById('closeProjects').onclick = function () { syncing = false; show(); };
-  syncButton.onclick = syncFolders;
-  document.getElementById('closeAgents').onclick = function () { choosing = false; show(); };
+  document.getElementById('changeFolder').onclick = function () { openPicker(state.workspaceRoot); };
+  document.getElementById('cancel').onclick = function () { overlay = ''; show(); };
+  document.getElementById('openChooser').onclick = openChooser;
+  document.getElementById('closeAgents').onclick = function () { overlay = ''; show(); };
   document.getElementById('saveAgents').onclick = saveAgents;
   document.getElementById('use').onclick = useFolder;
-  connect.onclick = function () { fetch('/auth/start', { method: 'POST' }); };
+  document.getElementById('openWeb').onclick = function () { postJson('/open-web'); };
+  document.getElementById('autostart').onchange = function (event) { changePreference(event.target, 'autostart'); };
+  document.getElementById('alerts').onchange = function (event) { changePreference(event.target, 'alerts'); };
+  document.getElementById('quit').onclick = quit;
+  syncButton.onclick = syncFolders;
+  connect.onclick = function () { postJson('/auth/start'); };
   events.onmessage = function (event) { render(JSON.parse(event.data)); };
-  events.onerror = function () { setConnected(false); };
+  events.onerror = function () {
+    document.getElementById('status').className = 'status';
+    document.getElementById('conn').textContent = 'Client parado';
+  };
 </script>
 </body>
 </html>`;
@@ -2084,7 +2177,8 @@ async function runCliCommand(cmd) {
   if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     console.log(`DeskReport CLI:
   deskreport                   Inicia o daemon local de agentes e widget
-  deskreport widget            Abre o widget no desktop
+  deskreport --background      Inicia em segundo plano, sem prender o terminal
+  deskreport widget            Abre o app do widget (sobe o client se precisar)
   deskreport mcp [--agent <x>] Roda o servidor MCP para agentes
   deskreport setup             Conecta a máquina à organização
   deskreport projects          Lista os projetos da organização
@@ -2100,10 +2194,21 @@ async function runCliCommand(cmd) {
   process.exit(1);
 }
 
-const command = process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : 'start';
+const command = process.argv.includes('--help') || process.argv.includes('-h')
+  ? 'help'
+  : (process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : 'start');
 
-if (command === 'widget') {
-  openNativeWidget();
+if (process.argv.includes('--background') && !process.env.DESKREPORT_BACKGROUND) {
+  // Segundo plano: devolve o terminal na hora e o client segue rodando sozinho
+  if (await isRunning()) console.log('DeskReport já está rodando');
+  else {
+    startBackground(process.argv.slice(2).filter((arg) => arg !== '--background'));
+    console.log(`DeskReport rodando em segundo plano. Log em ${logPath}`);
+  }
+} else if (command === 'widget') {
+  // Abrir o app sem o client rodando sobe o client em segundo plano, e ele mesmo abre a janela
+  if (await isRunning()) openNativeWidget();
+  else startBackground(['start', '--widget']);
 } else if (command === 'mcp') {
   const flag = process.argv.indexOf('--agent');
   const agent = flag > 0 ? process.argv[flag + 1] : process.env.DESKREPORT_AGENT;
@@ -2119,8 +2224,13 @@ if (command === 'widget') {
   if (!config.enabledAgents) saveConfig({ enabledAgents });
   console.log(`Agentes instalados: ${detectedAgents.join(', ') || 'nenhum'}. Ativos: ${enabledAgents.join(', ') || 'nenhum'}`);
   loadState();
+  // Só um client por máquina: se já tem um rodando, este só abre o widget
+  if (!(await startLocalServer())) {
+    console.log('DeskReport já está rodando');
+    if (!process.env.DESKREPORT_BACKGROUND) openNativeWidget();
+    process.exit(0);
+  }
   setInterval(releaseRenewedQuotas, 60_000);
-  startLocalServer();
 
   const terminalSetup = command === 'setup' || command === 'login';
   if (terminalSetup) await setup();

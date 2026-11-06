@@ -70,13 +70,13 @@ describe('AgentsService', () => {
   });
 
   it('atribui o agente na task ao disparar', async () => {
-    prisma.task.findFirst.mockResolvedValue({ id: 't-1', title: 'T', status: 'todo', assignees: [], comments: [{ userId: 'u-1', content: 'ok' }, { userId: 'agent-user-claude', content: 'feito' }] });
+    prisma.task.findFirst.mockResolvedValue({ id: 't-1', title: 'T', status: 'todo', assignees: [], comments: [{ userId: 'u-1', content: 'ok', user: { name: 'Rodrigo' } }, { userId: 'agent-user-claude', content: 'feito', user: { name: 'Claude Code' } }] });
     prisma.task.update.mockResolvedValue({ id: 't-1' });
 
     const result = await service.startDispatch('t-1', 'org-1', { agent: 'claude', projectPath: 'api' });
 
     expect(prisma.task.update.mock.calls[0][0].data).toEqual({ status: 'in-progress', assignees: { connect: { id: 'agent-user-claude' } } });
-    expect(result.comments).toEqual(['ok']);
+    expect(result.comments).toEqual(['Rodrigo: ok', 'Claude Code: feito']);
     expect(result.task).toEqual({ id: 't-1' });
   });
 
@@ -124,7 +124,8 @@ describe('AgentsService', () => {
     expect(prisma.taskComment.create.mock.calls[0][0].data.userId).toBe('agent-user-claude');
     const content = prisma.taskComment.create.mock.calls[0][0].data.content;
     expect(content).toContain('&lt;script&gt;');
-    expect(content).toContain('<li>M a.ts</li>');
+    expect(content).toContain('[Modificado]');
+    expect(content).toContain('<code>a.ts</code>');
   });
 
   it('sem Antigravity habilitado a task vai para revisão sem revisor', async () => {
@@ -202,5 +203,47 @@ describe('AgentsService', () => {
     expect(service.taskOutput('org-1', 't-1').text).toBe('linha 1\nlinha 2\n');
     expect(service.taskOutput('org-2', 't-1').text).toBe('');
     expect(service.appendOutput('org-1', { taskId: 't-1', text: 123 })).toBeNull();
+  });
+
+  it('não abre sessão de outro usuário ou de outra organização', async () => {
+    prisma.agentChatSession.findFirst.mockResolvedValue(null);
+    prisma.agentChatSession.deleteMany.mockResolvedValue({ count: 0 });
+
+    await expect(service.listSessionMessages('org-1', 'u-1', 's-9')).rejects.toThrow('Session not found');
+    await expect(service.deleteSession('org-1', 'u-1', 's-9')).rejects.toThrow('Session not found');
+    expect(prisma.agentChatSession.findFirst.mock.calls[0][0].where).toEqual({ id: 's-9', organizationId: 'org-1', userId: 'u-1' });
+    expect(prisma.agentChatSession.deleteMany.mock.calls[0][0].where).toEqual({ id: 's-9', organizationId: 'org-1', userId: 'u-1' });
+  });
+
+  it('nova sessão desativa as anteriores do usuário com o agente', async () => {
+    prisma.member.findFirst.mockResolvedValue({ id: 'm-1' });
+    prisma.agentChatSession.create.mockImplementation(({ data }: any) => Promise.resolve({ id: 's-1', ...data }));
+
+    await service.createSession('org-1', 'u-1', 'claude', {});
+
+    expect(prisma.agentChatSession.updateMany).toHaveBeenCalledWith({ where: { organizationId: 'org-1', userId: 'u-1', agent: 'claude', active: true }, data: { active: false } });
+    expect(prisma.agentChatSession.create.mock.calls[0][0].data).toMatchObject({ organizationId: 'org-1', userId: 'u-1', agent: 'claude' });
+  });
+
+  it('a primeira mensagem vira o título da sessão', async () => {
+    prisma.agentChatSession.findFirst.mockResolvedValue({ id: 's-1', agent: 'claude', title: 'Nova conversa', projectPath: null });
+    prisma.agentChatMessage.create.mockResolvedValue({ id: 'msg-1' });
+    prisma.agentChatSession.update.mockResolvedValue({ id: 's-1' });
+
+    await service.saveSessionMessage('org-1', 'u-1', 's-1', { content: 'Revisa o login', projectPath: 'app' });
+
+    expect(prisma.agentChatSession.update.mock.calls[0][0].data).toEqual({ title: 'Revisa o login', projectPath: 'app', active: true });
+  });
+
+  it('resposta da máquina só entra em sessão do dono e guarda o id da conversa da CLI', async () => {
+    prisma.agentChatSession.findFirst.mockResolvedValue(null);
+    expect(await service.saveChatReply('org-1', { agent: 'claude', ownerId: 'u-1', sessionId: 's-1', content: 'oi' })).toBeNull();
+
+    prisma.agentChatSession.findFirst.mockResolvedValue({ id: 's-1', externalId: null });
+    prisma.agentChatMessage.create.mockResolvedValue({ id: 'msg-1' });
+    await service.saveChatReply('org-1', { agent: 'claude', ownerId: 'u-1', sessionId: 's-1', content: 'oi', externalId: 'cli-1' });
+
+    expect(prisma.agentChatSession.findFirst.mock.calls[1][0].where).toEqual({ id: 's-1', organizationId: 'org-1', userId: 'u-1', agent: 'claude' });
+    expect(prisma.agentChatSession.update).toHaveBeenCalledWith({ where: { id: 's-1' }, data: { externalId: 'cli-1' } });
   });
 });

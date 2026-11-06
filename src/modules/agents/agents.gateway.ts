@@ -156,25 +156,25 @@ export class AgentsGateway implements OnGatewayConnection {
     return { agent };
   }
 
-  // Salva a mensagem do usuário e manda a máquina rodar o agente com o histórico da conversa
-  async sendChat(organizationId: string, userId: string, agent: string, data: any) {
+  // Salva a mensagem na sessão e manda a máquina rodar o agente. Com externalId a CLI retoma a própria conversa
+  async sendSessionChat(organizationId: string, userId: string, sessionId: string, data: any) {
     if (!(await this.hasMachine(organizationId))) {
       throw new BadRequestException('Nenhuma máquina conectada. Suba o deskreport-client.');
     }
-    const projectPath = data?.projectPath;
-    checkProjectPath(projectPath);
 
-    const message = await this.agentsService.saveChatMessage(organizationId, userId, agent, data);
-    const history = await this.agentsService.listChat(organizationId, userId, agent);
+    const { message, session } = await this.agentsService.saveSessionMessage(organizationId, userId, sessionId, data);
+    const history = await this.agentsService.listSessionMessages(organizationId, userId, session.id);
     this.server.to(userRoom(organizationId, userId)).emit('agent:chat-message', message);
     this.server.to(machineRoom(organizationId)).emit('agent:chat', {
-      agent,
+      agent: session.agent,
       ownerId: userId,
-      projectPath,
+      sessionId: session.id,
+      externalId: session.externalId,
+      projectPath: session.projectPath,
       content: message.content,
-      history: history.slice(-20).map((m) => ({ author: m.user.name, content: m.content })),
+      history: history.slice(-21, -1).map((m) => ({ author: m.user.name, content: m.content })),
     });
-    return message;
+    return { ...message, session };
   }
 
   async hasMachine(organizationId: string) {

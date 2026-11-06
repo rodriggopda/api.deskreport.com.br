@@ -56,15 +56,30 @@ export class AgentsController {
     return this.agentsGateway.continueQuota(orgId, agent);
   }
 
-  // Chat Lateral com o agente
-  @Get('agents/:agent/messages')
-  messages(@ActiveOrg() orgId: string, @ActiveUser() userId: string, @Param('agent') agent: string) {
-    return this.agentsService.listChat(orgId, userId, agent);
+  // Sessões do Chat Lateral, sempre do usuário logado na organização ativa
+  @Get('agents/:agent/sessions')
+  sessions(@ActiveOrg() orgId: string, @ActiveUser() userId: string, @Param('agent') agent: string) {
+    return this.agentsService.listSessions(orgId, userId, agent);
   }
 
-  @Post('agents/:agent/messages')
-  sendMessage(@ActiveOrg() orgId: string, @ActiveUser() userId: string, @Param('agent') agent: string, @Body() data: any) {
-    return this.agentsGateway.sendChat(orgId, userId, agent, data);
+  @Post('agents/:agent/sessions')
+  createSession(@ActiveOrg() orgId: string, @ActiveUser() userId: string, @Param('agent') agent: string, @Body() data: any) {
+    return this.agentsService.createSession(orgId, userId, agent, data);
+  }
+
+  @Get('agents/sessions/:sessionId/messages')
+  sessionMessages(@ActiveOrg() orgId: string, @ActiveUser() userId: string, @Param('sessionId') sessionId: string) {
+    return this.agentsService.listSessionMessages(orgId, userId, sessionId);
+  }
+
+  @Post('agents/sessions/:sessionId/messages')
+  sendSessionMessage(@ActiveOrg() orgId: string, @ActiveUser() userId: string, @Param('sessionId') sessionId: string, @Body() data: any) {
+    return this.agentsGateway.sendSessionChat(orgId, userId, sessionId, data);
+  }
+
+  @Delete('agents/sessions/:sessionId')
+  deleteSession(@ActiveOrg() orgId: string, @ActiveUser() userId: string, @Param('sessionId') sessionId: string) {
+    return this.agentsService.deleteSession(orgId, userId, sessionId);
   }
 
   // Rotas do MCP (deskreport mcp): autenticadas pela chave da máquina, sem sessão do navegador

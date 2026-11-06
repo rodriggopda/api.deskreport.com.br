@@ -100,6 +100,14 @@ export class PrismaServiceMock {
     findMany: jest.fn(),
     create: jest.fn(),
   };
+  agentChatSession = {
+    findMany: jest.fn(),
+    findFirst: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+    updateMany: jest.fn(),
+    deleteMany: jest.fn(),
+  };
   organization = {
     findFirst: jest.fn(),
     update: jest.fn(),
