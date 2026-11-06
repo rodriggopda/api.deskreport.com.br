@@ -84,7 +84,7 @@ function loadConfig() {
 
   return {
     apiUrl: process.env.DESKREPORT_API_URL || saved.apiUrl || 'https://api.deskreport.com.br',
-    webUrl: process.env.DESKREPORT_WEB_URL || saved.webUrl || 'https://deskreport.com.br',
+    webUrl: process.env.DESKREPORT_WEB_URL || saved.webUrl || 'https://app.deskreport.com.br',
     machineToken: process.env.DESKREPORT_MACHINE_TOKEN || process.env.DESKREPORT_DEV_TOKEN || saved.machineToken,
     workspaceRoot: root ? path.resolve(root) : '',
     organizationName: saved.organizationName,
