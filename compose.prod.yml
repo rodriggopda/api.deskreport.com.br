@@ -1,0 +1,17 @@
+# Produção no Dokploy (serviço Compose, Compose Path ./compose.prod.yml).
+# Postgres é serviço Database do Dokploy: DATABASE_URL usa o host interno dele.
+# As variáveis vêm da aba Environment, que o Dokploy grava neste .env. O domínio fica na aba Domains, porta 3335
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3335
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
